@@ -53,7 +53,7 @@
     for (const note of state.notes) {
       const list = notesByItem.get(note.item_id) || []; list.push(note); notesByItem.set(note.item_id, list);
     }
-    const activity = state.items.map((item) => {
+    const activity = state.items.filter((item) => item.id !== state.snapshot?.item?.id).map((item) => {
       const notes = notesByItem.get(item.id) || [];
       let at = item.updated_at || item.created_at;
       for (const note of notes) {
@@ -83,7 +83,7 @@
   addEventListener("message", (event) => {
     const message = event.data;
     if (!message || typeof message !== "object") return;
-    if (message.type === "stuff:view-snapshot") { state.snapshot = message; configure(); return; }
+    if (message.type === "stuff:view-snapshot") { state.snapshot = message; configure(); render(); return; }
     if (message.type !== "stuff:view-query-result") return;
     if (!message.ok) state.errors.push(`${message.request_id} unavailable`);
     const docs = message.result?.docs;
