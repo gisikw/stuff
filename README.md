@@ -1,6 +1,6 @@
 # Stuff
 
-Stuff is a small durable store for named Items, Notes about those Items, and optional JSON Schemas that document recurring metadata conventions.
+Stuff is a small durable store for named Items, Notes about those Items, revisioned Views, and optional JSON Schemas that document recurring metadata conventions.
 
 It is designed for humans, scripts, and agents that need to leave behind structured context without adopting a task manager or workflow engine.
 
@@ -18,6 +18,7 @@ Stuff deliberately does less.
 
 - An **Item** is a durable namespace for any concern.
 - A **Note** is an inert statement associated with one Item.
+- A **View** is a named, revisioned HTML document that clients render themselves.
 - A **Schema** is optional documentation for a metadata convention.
 - **Metadata** is arbitrary bounded JSON owned by clients.
 - **Queries** use CouchDB Mango directly rather than a private query language.
@@ -136,6 +137,28 @@ The system owns the ID, timestamps, and optimistic revision. The caller owns the
 
 A Note belongs to exactly one Item. Terms such as `decision`, `attempt`, `report`, `runbook`, and `observation` are metadata conventions, not behavioral subtypes.
 
+### View
+
+```json
+{
+  "id": "view_…",
+  "name": "Migration report",
+  "created_at": "2026-08-27T03:15:00Z",
+  "updated_at": "2026-08-27T03:16:00Z",
+  "revision": "1-…",
+  "renderer": "<!doctype html>…",
+  "schema": "report-html"
+}
+```
+
+A View stores a bounded UTF-8 HTML document (`renderer`) as an inert string. Stuff stores and version-revs it; it never executes or sandboxes the document, and no Item currently points at a View. The optional `schema` field is an advisory reference to an existing Schema name; it documents a convention and is checked only for existence at write time.
+
+```bash
+view=$(stuff view add "Migration report" @report.html --schema report-html)
+stuff view get "$view"
+stuff view update "$view" @report-v2.html --name "Migration report v2" --revision 1-…
+```
+
 ### Attachments
 
 Documents are Notes with attachments:
@@ -224,6 +247,10 @@ stuff note add ITEM [TEXT] [--meta JSON|@FILE] [--attach FILE ...]
 stuff note get NOTE
 stuff note find [@QUERY | stdin]
 
+stuff view add NAME @RENDERER [--schema SCHEMA]
+stuff view get VIEW
+stuff view update VIEW @RENDERER [--name NAME] [--schema SCHEMA] [--revision REV]
+
 stuff schema add NAME @SCHEMA
 stuff schema get NAME
 stuff schema check NAME ITEM
@@ -295,4 +322,4 @@ nix build
 nix flake check
 ```
 
-The test suite covers HTTP and CLI contracts, optimistic revision conflicts, point-in-time validation and drift, arbitrary JSON metadata, Mango passthrough, authentication, and query correction. Live integration is tested against CouchDB 3.x.
+The test suite covers HTTP and CLI contracts, optimistic revision conflicts, point-in-time validation and drift, arbitrary JSON metadata, View rendering documents (bounded UTF-8, revision conflicts, advisory schema references), Mango passthrough, authentication, and query correction. Live integration is tested against CouchDB 3.x.

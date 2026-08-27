@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 type CLI struct {
@@ -78,6 +79,8 @@ func (c *CLI) Run(ctx context.Context, args []string) error {
 		return c.query(ctx, "/v1/items/_find", args[1:], pretty)
 	case "note":
 		return c.note(ctx, args[1:], pretty)
+	case "view":
+		return c.view(ctx, args[1:], pretty)
 	case "schema":
 		return c.schema(ctx, args[1:], pretty)
 	case "schemas":
@@ -192,6 +195,82 @@ func (c *CLI) note(ctx context.Context, args []string, pretty bool) error {
 	default:
 		return usage("stuff note add|get|find ...")
 	}
+}
+
+func (c *CLI) view(ctx context.Context, args []string, pretty bool) error {
+	if len(args) == 0 {
+		return usage("stuff view add|get|update ...")
+	}
+	switch args[0] {
+	case "add":
+		fs := newFlags("view add")
+		schema := fs.String("schema", "", "advisory Schema name")
+		if err := fs.Parse(flagsFirst(args[1:])); err != nil {
+			return err
+		}
+		if fs.NArg() != 2 {
+			return usage("stuff view add NAME @RENDERER [--schema SCHEMA]")
+		}
+		renderer, err := readRendererSource(fs.Arg(1), c.In)
+		if err != nil {
+			return fmt.Errorf("renderer: %w", err)
+		}
+		body := Document{"name": fs.Arg(0), "renderer": renderer}
+		if *schema != "" {
+			body["schema"] = *schema
+		}
+		return c.create(ctx, "/v1/views", body)
+	case "get":
+		if len(args) != 2 {
+			return usage("stuff view get VIEW")
+		}
+		return c.getJSON(ctx, "/v1/views/"+args[1], pretty)
+	case "update":
+		fs := newFlags("view update")
+		name := fs.String("name", "", "new name")
+		schema := fs.String("schema", "", "advisory Schema name")
+		rev := fs.String("revision", "", "optimistic revision")
+		if err := fs.Parse(flagsFirst(args[1:])); err != nil {
+			return err
+		}
+		if fs.NArg() != 2 {
+			return usage("stuff view update VIEW @RENDERER [--name NAME] [--schema SCHEMA] [--revision REV]")
+		}
+		renderer, err := readRendererSource(fs.Arg(1), c.In)
+		if err != nil {
+			return fmt.Errorf("renderer: %w", err)
+		}
+		body := Document{"renderer": renderer, "revision": *rev}
+		if *name != "" {
+			body["name"] = *name
+		}
+		if *schema != "" {
+			body["schema"] = *schema
+		}
+		return c.requestJSON(ctx, http.MethodPatch, "/v1/views/"+fs.Arg(0), body, pretty, false)
+	default:
+		return usage("stuff view add|get|update ...")
+	}
+}
+
+func readRendererSource(src string, in io.Reader) (string, error) {
+	var b []byte
+	var err error
+	switch {
+	case src == "-":
+		b, err = io.ReadAll(in)
+	case strings.HasPrefix(src, "@"):
+		b, err = os.ReadFile(strings.TrimPrefix(src, "@"))
+	default:
+		return "", fmt.Errorf("renderer source must be @FILE or - for stdin, got %q", src)
+	}
+	if err != nil {
+		return "", err
+	}
+	if !utf8.Valid(b) {
+		return "", errors.New("renderer is not valid UTF-8")
+	}
+	return string(b), nil
 }
 
 func (c *CLI) schema(ctx context.Context, args []string, pretty bool) error {
@@ -396,7 +475,7 @@ type usageError string
 func (e usageError) Error() string { return string(e) }
 func usage(s string) error         { return usageError(s) }
 
-const Help = `Stuff stores inert Items and Notes with arbitrary metadata.
+const Help = `Stuff stores inert Items, Notes, and Views with arbitrary metadata.
 
 Usage:
   stuff add NAME [--meta JSON|@FILE] [--validate SCHEMA]
@@ -406,6 +485,9 @@ Usage:
   stuff note add ITEM [TEXT] [--meta JSON|@FILE] [--attach FILE ...]
   stuff note get NOTE
   stuff note find [@QUERY | stdin]
+  stuff view add NAME @RENDERER [--schema SCHEMA]
+  stuff view get VIEW
+  stuff view update VIEW @RENDERER [--name NAME] [--schema SCHEMA] [--revision REV]
   stuff schema add NAME @SCHEMA
   stuff schema get NAME
   stuff schema check NAME ITEM

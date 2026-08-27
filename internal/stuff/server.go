@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -29,6 +30,10 @@ const (
 	MaxAttachmentBytes = 16 << 20
 	MaxResponseBytes   = 16 << 20
 	MaxPageSize        = 200
+	// MaxRendererBytes bounds a View's HTML renderer document. JSON string
+	// escaping can inflate UTF-8 up to 6x, so view requests decode with that
+	// headroom before the renderer itself is measured.
+	MaxRendererBytes = 1 << 20
 )
 
 type Server struct {
@@ -87,6 +92,12 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		err = s.get(w, r, parts[1], "note")
 	case len(parts) == 4 && parts[0] == "notes" && parts[2] == "attachments" && r.Method == http.MethodGet:
 		err = s.attachment(w, r, parts[1], parts[3])
+	case p == "views" && r.Method == http.MethodPost:
+		err = s.createView(w, r)
+	case len(parts) == 2 && parts[0] == "views" && r.Method == http.MethodGet:
+		err = s.get(w, r, parts[1], "view")
+	case len(parts) == 2 && parts[0] == "views" && r.Method == http.MethodPatch:
+		err = s.updateView(w, r, parts[1])
 	case p == "schemas" && r.Method == http.MethodGet:
 		err = s.listSchemas(w, r)
 	case p == "schemas" && r.Method == http.MethodPost:
@@ -132,7 +143,7 @@ func (s *Server) handleError(w http.ResponseWriter, err error) {
 			return
 		}
 		if status == http.StatusNotFound {
-			writeError(w, status, "id", se.Reason, "check the Item, Note, or Schema identifier")
+			writeError(w, status, "id", se.Reason, "check the Item, Note, View, or Schema identifier")
 			return
 		}
 		if status < 400 || status > 599 {
@@ -451,6 +462,133 @@ func (s *Server) explain(w http.ResponseWriter, r *http.Request, kind string) er
 	return nil
 }
 
+func validRenderer(renderer string) error {
+	if renderer == "" {
+		return bad("renderer", "renderer is required", "a non-empty UTF-8 HTML document")
+	}
+	if !utf8.ValidString(renderer) {
+		return bad("renderer", "renderer is not valid UTF-8", "a UTF-8 encoded HTML document")
+	}
+	if len(renderer) > MaxRendererBytes {
+		return bad("renderer", "renderer exceeds the size limit", fmt.Sprintf("at most %d bytes", MaxRendererBytes))
+	}
+	return nil
+}
+
+func (s *Server) requireSchema(ctx context.Context, name string) error {
+	if name == "" {
+		return nil
+	}
+	if !validSchemaName(name) {
+		return bad("schema", "Schema name is invalid", "1-128 letters, digits, dots, underscores, or hyphens; begin with a letter or digit")
+	}
+	if _, err := s.store.Get(ctx, "schema:"+name); err != nil {
+		var se *StoreError
+		if errors.As(err, &se) && se.Status == http.StatusNotFound {
+			return bad("schema", fmt.Sprintf("Schema %q does not exist", name), "a name from `stuff schemas`")
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *Server) createView(w http.ResponseWriter, r *http.Request) error {
+	var in struct {
+		Name     string  `json:"name"`
+		Renderer string  `json:"renderer"`
+		Schema   *string `json:"schema"`
+	}
+	if err := decodeJSON(r, MaxRendererBytes*6+MaxJSONBytes, &in); err != nil {
+		return err
+	}
+	in.Name = strings.TrimSpace(in.Name)
+	if in.Name == "" {
+		return bad("name", "name is required", "a non-empty View name")
+	}
+	if err := validRenderer(in.Renderer); err != nil {
+		return err
+	}
+	schemaRef := ""
+	if in.Schema != nil {
+		schemaRef = strings.TrimSpace(*in.Schema)
+		if err := s.requireSchema(r.Context(), schemaRef); err != nil {
+			return err
+		}
+	}
+	id, err := newID("view_")
+	if err != nil {
+		return err
+	}
+	now := s.now().UTC().Format(time.RFC3339Nano)
+	doc := Document{"stuff_kind": "view", "name": in.Name, "renderer": in.Renderer, "created_at": now, "updated_at": now}
+	if schemaRef != "" {
+		doc["schema"] = schemaRef
+	}
+	rev, err := s.store.Create(r.Context(), id, doc)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusCreated, Document{"id": id, "revision": rev})
+	return nil
+}
+
+func (s *Server) updateView(w http.ResponseWriter, r *http.Request, id string) error {
+	var in struct {
+		Name     *string `json:"name"`
+		Renderer *string `json:"renderer"`
+		Schema   *string `json:"schema"`
+		Revision string  `json:"revision"`
+	}
+	if err := decodeJSON(r, MaxRendererBytes*6+MaxJSONBytes, &in); err != nil {
+		return err
+	}
+	doc, err := s.store.Get(r.Context(), id)
+	if err != nil {
+		return err
+	}
+	if doc["stuff_kind"] != "view" {
+		return &StoreError{Status: 404, Reason: "View not found"}
+	}
+	if in.Name == nil && in.Renderer == nil && in.Schema == nil {
+		return bad("$", "update changes nothing", "provide name, renderer, and/or schema")
+	}
+	if in.Name != nil {
+		n := strings.TrimSpace(*in.Name)
+		if n == "" {
+			return bad("name", "name cannot be empty", "a non-empty View name")
+		}
+		doc["name"] = n
+	}
+	if in.Renderer != nil {
+		if err := validRenderer(*in.Renderer); err != nil {
+			return err
+		}
+		doc["renderer"] = *in.Renderer
+	}
+	if in.Schema != nil {
+		ref := strings.TrimSpace(*in.Schema)
+		if ref == "" {
+			return bad("schema", "schema cannot be empty", "a name from `stuff schemas`; omit the field to keep the current reference")
+		}
+		if err := s.requireSchema(r.Context(), ref); err != nil {
+			return err
+		}
+		doc["schema"] = ref
+	}
+	rev, _ := doc["_rev"].(string)
+	if in.Revision != "" {
+		rev = in.Revision
+	}
+	doc["updated_at"] = s.now().UTC().Format(time.RFC3339Nano)
+	newRev, err := s.store.Put(r.Context(), id, rev, doc)
+	if err != nil {
+		return err
+	}
+	doc["_rev"] = newRev
+	writeJSON(w, 200, publicDocument(doc))
+	return nil
+}
+
 func (s *Server) putSchema(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
 		Name   string `json:"name"`
@@ -616,13 +754,13 @@ func (s *Server) describe(w http.ResponseWriter, r *http.Request) error {
 	}
 	out := Document{
 		"items": lenDocs(items), "notes": lenDocs(notes), "sample_limit": MaxPageSize,
-		"envelopes":       Document{"item": []any{"id", "name", "created_at", "updated_at", "revision", "metadata"}, "note": []any{"id", "item_id", "created_at", "updated_at", "revision", "text", "metadata", "attachments"}},
+		"envelopes":       Document{"item": []any{"id", "name", "created_at", "updated_at", "revision", "metadata"}, "note": []any{"id", "item_id", "created_at", "updated_at", "revision", "text", "metadata", "attachments"}, "view": []any{"id", "name", "created_at", "updated_at", "revision", "renderer", "schema"}},
 		"mango":           Document{"version": "CouchDB 3.x Mango", "operators": []any{"$eq", "$ne", "$gt", "$gte", "$lt", "$lte", "$exists", "$type", "$in", "$nin", "$all", "$size", "$elemMatch", "$allMatch", "$and", "$or", "$not", "$nor", "$beginsWith", "$regex", "$mod", "$keyMapMatch", "$text"}},
-		"limits":          Document{"limit_max": MaxPageSize, "selector_bytes_max": MaxQueryBytes, "metadata_bytes_max": MaxJSONBytes, "attachment_bytes_max": MaxAttachmentBytes, "response_bytes_max": MaxResponseBytes},
+		"limits":          Document{"limit_max": MaxPageSize, "selector_bytes_max": MaxQueryBytes, "metadata_bytes_max": MaxJSONBytes, "attachment_bytes_max": MaxAttachmentBytes, "renderer_bytes_max": MaxRendererBytes, "response_bytes_max": MaxResponseBytes},
 		"observed_fields": fields, "indexes": indexes,
 		"text_search": hasIndexType(indexes, "text"),
 		"examples":    Document{"find_items": `stuff find <<'JSON'\n{"selector":{"metadata.area":"familiar"},"limit":20}\nJSON`, "find_notes": `stuff note find <<'JSON'\n{"selector":{"metadata.kind":"decision"},"limit":20}\nJSON`},
-		"scope":       "Stores inert Items, Notes, attachments, and advisory Schemas. It does not dispatch, schedule, retry, lock, reconcile, or enforce workflow.",
+		"scope":       "Stores inert Items, Notes, Views, attachments, and advisory Schemas. It does not dispatch, schedule, retry, lock, reconcile, or enforce workflow.",
 	}
 	writeJSON(w, 200, out)
 	return nil
