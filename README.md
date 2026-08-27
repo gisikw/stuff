@@ -157,6 +157,7 @@ A View stores a bounded UTF-8 HTML document (`renderer`) as an inert string. Stu
 view=$(stuff view add "Migration report" @report.html --schema report-html)
 stuff view get "$view"
 stuff view update "$view" @report-v2.html --name "Migration report v2" --revision 1-…
+stuff view update "$view" @report-v2.html --clear-schema
 ```
 
 ### Attachments
@@ -249,7 +250,7 @@ stuff note find [@QUERY | stdin]
 
 stuff view add NAME @RENDERER [--schema SCHEMA]
 stuff view get VIEW
-stuff view update VIEW @RENDERER [--name NAME] [--schema SCHEMA] [--revision REV]
+stuff view update VIEW @RENDERER [--name NAME] [--schema SCHEMA | --clear-schema] [--revision REV]
 
 stuff schema add NAME @SCHEMA
 stuff schema get NAME

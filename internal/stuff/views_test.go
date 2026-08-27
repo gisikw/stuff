@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 )
 
 const viewHTML = "<!doctype html><html><head><title>Report</title></head><body><p>ok</p><script>inert</script></body></html>"
@@ -126,28 +125,15 @@ func TestViewRendererMustBeBoundedUTF8(t *testing.T) {
 		t.Fatalf("oversized update on missing view: %d %#v", code, out)
 	}
 
-	// Go's JSON decoder normalizes stray invalid UTF-8 bytes in string literals
-	// to U+FFFD (the same leniency Items' name and metadata already exhibit).
-	// The boundary guarantee is therefore that the stored renderer is always
-	// valid, bounded UTF-8, enforced by the resource-level check.
+	// encoding/json normally replaces invalid UTF-8 in JSON strings with
+	// U+FFFD. View endpoints reject the raw body first so malformed renderer
+	// bytes cannot silently change while crossing the API boundary.
 	raw := append(append([]byte(`{"name":"Bad","renderer":"`), 0xff, 0xfe), []byte(`"}`)...)
 	req := httptest.NewRequest(http.MethodPost, "/v1/views", bytes.NewReader(raw))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
-	if w.Code != 201 {
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "not valid UTF-8") {
 		t.Fatalf("non-UTF8 body: %d %s", w.Code, w.Body.String())
-	}
-	var created Document
-	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
-		t.Fatal(err)
-	}
-	doc, err := store.Get(context.Background(), created["id"].(string))
-	if err != nil {
-		t.Fatal(err)
-	}
-	renderer, _ := doc["renderer"].(string)
-	if !utf8.ValidString(renderer) {
-		t.Fatalf("stored renderer is not valid UTF-8: %q", renderer)
 	}
 }
 
@@ -185,6 +171,13 @@ func TestViewSchemaReferenceRoundTrip(t *testing.T) {
 	code, out = request(t, h, "PATCH", "/v1/views/"+id, Document{"schema": "missing-schema"})
 	if code != 400 || !strings.Contains(errReason(out), "does not exist") {
 		t.Fatalf("unknown schema on update: %d %#v", code, out)
+	}
+	code, updated = request(t, h, "PATCH", "/v1/views/"+id, Document{"schema": nil})
+	if code != 200 {
+		t.Fatalf("clear schema: %d %#v", code, updated)
+	}
+	if _, ok := updated["schema"]; ok {
+		t.Fatalf("cleared schema still present: %#v", updated)
 	}
 
 	code, plain := request(t, h, "POST", "/v1/views", Document{"name": "Plain", "renderer": viewHTML})
@@ -259,6 +252,17 @@ func TestCLIViewCommandsFollowConventions(t *testing.T) {
 	}
 	if _, ok := lastBody["schema"]; ok {
 		t.Fatalf("omitted --schema must not be sent: %#v", lastBody)
+	}
+
+	stdout.Reset()
+	if err := c.Run(context.Background(), []string{"view", "update", "view_test", "@" + file, "--clear-schema"}); err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := lastBody["schema"]; !ok || value != nil {
+		t.Fatalf("--clear-schema must send null: %#v", lastBody)
+	}
+	if err := c.Run(context.Background(), []string{"view", "update", "view_test", "@" + file, "--schema", "report-html", "--clear-schema"}); err == nil {
+		t.Fatal("combined --schema and --clear-schema accepted")
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("unexpected stderr: %s", stderr.String())

@@ -229,12 +229,13 @@ func (c *CLI) view(ctx context.Context, args []string, pretty bool) error {
 		fs := newFlags("view update")
 		name := fs.String("name", "", "new name")
 		schema := fs.String("schema", "", "advisory Schema name")
+		clearSchema := fs.Bool("clear-schema", false, "remove the advisory Schema reference")
 		rev := fs.String("revision", "", "optimistic revision")
 		if err := fs.Parse(flagsFirst(args[1:])); err != nil {
 			return err
 		}
-		if fs.NArg() != 2 {
-			return usage("stuff view update VIEW @RENDERER [--name NAME] [--schema SCHEMA] [--revision REV]")
+		if fs.NArg() != 2 || (*schema != "" && *clearSchema) {
+			return usage("stuff view update VIEW @RENDERER [--name NAME] [--schema SCHEMA | --clear-schema] [--revision REV]")
 		}
 		renderer, err := readRendererSource(fs.Arg(1), c.In)
 		if err != nil {
@@ -246,6 +247,8 @@ func (c *CLI) view(ctx context.Context, args []string, pretty bool) error {
 		}
 		if *schema != "" {
 			body["schema"] = *schema
+		} else if *clearSchema {
+			body["schema"] = nil
 		}
 		return c.requestJSON(ctx, http.MethodPatch, "/v1/views/"+fs.Arg(0), body, pretty, false)
 	default:
@@ -487,7 +490,7 @@ Usage:
   stuff note find [@QUERY | stdin]
   stuff view add NAME @RENDERER [--schema SCHEMA]
   stuff view get VIEW
-  stuff view update VIEW @RENDERER [--name NAME] [--schema SCHEMA] [--revision REV]
+  stuff view update VIEW @RENDERER [--name NAME] [--schema SCHEMA | --clear-schema] [--revision REV]
   stuff schema add NAME @SCHEMA
   stuff schema get NAME
   stuff schema check NAME ITEM

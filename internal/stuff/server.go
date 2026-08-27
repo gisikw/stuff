@@ -169,6 +169,22 @@ func decodeJSON(r *http.Request, max int64, out any) error {
 	return nil
 }
 
+func decodeUTF8JSON(r *http.Request, max int64, out any) error {
+	body, err := io.ReadAll(io.LimitReader(r.Body, max+1))
+	if err != nil {
+		return bad("$", "cannot read request: "+err.Error(), "a single UTF-8 JSON object")
+	}
+	if int64(len(body)) > max {
+		return bad("$", "request exceeds its limit", fmt.Sprintf("at most %d bytes", max))
+	}
+	if !utf8.Valid(body) {
+		return bad("$", "request is not valid UTF-8", "a UTF-8 encoded JSON object")
+	}
+	copy := r.Clone(r.Context())
+	copy.Body = io.NopCloser(bytes.NewReader(body))
+	return decodeJSON(copy, max, out)
+}
+
 type optionalJSON struct {
 	Present bool
 	Value   any
@@ -494,11 +510,11 @@ func (s *Server) requireSchema(ctx context.Context, name string) error {
 
 func (s *Server) createView(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
-		Name     string  `json:"name"`
-		Renderer string  `json:"renderer"`
-		Schema   *string `json:"schema"`
+		Name     string       `json:"name"`
+		Renderer string       `json:"renderer"`
+		Schema   optionalJSON `json:"schema"`
 	}
-	if err := decodeJSON(r, MaxRendererBytes*6+MaxJSONBytes, &in); err != nil {
+	if err := decodeUTF8JSON(r, MaxRendererBytes*6+MaxJSONBytes, &in); err != nil {
 		return err
 	}
 	in.Name = strings.TrimSpace(in.Name)
@@ -509,8 +525,15 @@ func (s *Server) createView(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	schemaRef := ""
-	if in.Schema != nil {
-		schemaRef = strings.TrimSpace(*in.Schema)
+	if in.Schema.Present && in.Schema.Value != nil {
+		value, ok := in.Schema.Value.(string)
+		if !ok {
+			return bad("schema", "schema must be a string or null", "an existing Schema name or null")
+		}
+		schemaRef = strings.TrimSpace(value)
+		if schemaRef == "" {
+			return bad("schema", "schema cannot be empty", "an existing Schema name, null, or an omitted field")
+		}
 		if err := s.requireSchema(r.Context(), schemaRef); err != nil {
 			return err
 		}
@@ -534,12 +557,12 @@ func (s *Server) createView(w http.ResponseWriter, r *http.Request) error {
 
 func (s *Server) updateView(w http.ResponseWriter, r *http.Request, id string) error {
 	var in struct {
-		Name     *string `json:"name"`
-		Renderer *string `json:"renderer"`
-		Schema   *string `json:"schema"`
-		Revision string  `json:"revision"`
+		Name     *string      `json:"name"`
+		Renderer *string      `json:"renderer"`
+		Schema   optionalJSON `json:"schema"`
+		Revision string       `json:"revision"`
 	}
-	if err := decodeJSON(r, MaxRendererBytes*6+MaxJSONBytes, &in); err != nil {
+	if err := decodeUTF8JSON(r, MaxRendererBytes*6+MaxJSONBytes, &in); err != nil {
 		return err
 	}
 	doc, err := s.store.Get(r.Context(), id)
@@ -549,7 +572,7 @@ func (s *Server) updateView(w http.ResponseWriter, r *http.Request, id string) e
 	if doc["stuff_kind"] != "view" {
 		return &StoreError{Status: 404, Reason: "View not found"}
 	}
-	if in.Name == nil && in.Renderer == nil && in.Schema == nil {
+	if in.Name == nil && in.Renderer == nil && !in.Schema.Present {
 		return bad("$", "update changes nothing", "provide name, renderer, and/or schema")
 	}
 	if in.Name != nil {
@@ -565,15 +588,23 @@ func (s *Server) updateView(w http.ResponseWriter, r *http.Request, id string) e
 		}
 		doc["renderer"] = *in.Renderer
 	}
-	if in.Schema != nil {
-		ref := strings.TrimSpace(*in.Schema)
-		if ref == "" {
-			return bad("schema", "schema cannot be empty", "a name from `stuff schemas`; omit the field to keep the current reference")
+	if in.Schema.Present {
+		if in.Schema.Value == nil {
+			delete(doc, "schema")
+		} else {
+			value, ok := in.Schema.Value.(string)
+			if !ok {
+				return bad("schema", "schema must be a string or null", "an existing Schema name or null")
+			}
+			ref := strings.TrimSpace(value)
+			if ref == "" {
+				return bad("schema", "schema cannot be empty", "an existing Schema name or null")
+			}
+			if err := s.requireSchema(r.Context(), ref); err != nil {
+				return err
+			}
+			doc["schema"] = ref
 		}
-		if err := s.requireSchema(r.Context(), ref); err != nil {
-			return err
-		}
-		doc["schema"] = ref
 	}
 	rev, _ := doc["_rev"].(string)
 	if in.Revision != "" {
