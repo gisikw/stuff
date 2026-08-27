@@ -192,7 +192,7 @@ addEventListener("message", (event) => {
 
 The first-party host accepts messages only from its renderer iframe, permits at most four concurrent requests, limits query JSON to 64 KiB and results to the service maximum of 200 documents, and exposes only Item and Note finds. Query access is denied by default: the View must explicitly carry `find_items` and/or `find_notes` in its top-level `capabilities` field. The host performs the same-origin request; the opaque renderer receives no bearer credential, direct fetch/socket capability, mutation API, attachment body, View source, or ReaderConfig access.
 
-A View renderer is still active code trusted with its snapshot and any explicitly granted query results. Browser sandboxing contains ambient authority; it is not a substitute for reviewing renderer source before attaching it to sensitive Items.
+A View renderer is still active code trusted with its snapshot and any explicitly granted query results. Browser sandboxing contains ambient authority; it is not a substitute for reviewing renderer source before attaching it to sensitive Items. `examples/views/stuff-home.html` is a responsive userland homepage that combines reverse chronology with an explicitly advisory `metadata.status` work lens.
 
 ```bash
 view=$(stuff view add "Migration report" @report.html --schema report-html \
