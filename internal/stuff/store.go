@@ -219,7 +219,15 @@ func prepareQuery(kind string, in Document) Document {
 		sel = map[string]any{}
 	}
 	sel = rewriteSelector(sel)
-	q["selector"] = map[string]any{"$and": []any{map[string]any{"stuff_kind": kind}, sel}}
+	// CouchDB does not treat an empty object inside $and as a match-all clause;
+	// it can silently return no documents. This matters for describe's bounded
+	// sample and for callers issuing the natural {"selector":{}} query. Omit the
+	// vacuous clause and select the public kind directly.
+	if len(sel) == 0 {
+		q["selector"] = map[string]any{"stuff_kind": kind}
+	} else {
+		q["selector"] = map[string]any{"$and": []any{map[string]any{"stuff_kind": kind}, sel}}
+	}
 	if fields, ok := q["fields"].([]any); ok {
 		for i, f := range fields {
 			if x, ok := f.(string); ok {

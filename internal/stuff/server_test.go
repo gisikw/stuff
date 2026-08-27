@@ -219,6 +219,14 @@ func TestCouchEndpointEscapesAttachmentNamesOnce(t *testing.T) {
 	}
 }
 
+func TestPrepareQueryEmptySelectorMatchesTheRequestedKind(t *testing.T) {
+	got := prepareQuery("item", Document{"selector": Document{}, "limit": 200})
+	sel, ok := got["selector"].(map[string]any)
+	if !ok || len(sel) != 1 || sel["stuff_kind"] != "item" {
+		t.Fatalf("empty selector gained a vacuous Mango clause: %#v", got["selector"])
+	}
+}
+
 func TestPrepareQueryPreservesMangoAndProjection(t *testing.T) {
 	q := Document{"selector": Document{"$or": []any{Document{"id": "item_x"}, Document{"metadata": Document{"id": "caller-value"}}}}, "fields": []any{"name"}, "sort": []any{Document{"updated_at": "desc"}}, "bookmark": "opaque"}
 	got := prepareQuery("item", q)
