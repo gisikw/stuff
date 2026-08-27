@@ -112,11 +112,14 @@ The `/read` routes are unauthenticated at the application layer so deployments c
   "metadata": {
     "area": "infrastructure",
     "state": "open"
-  }
+  },
+  "view_id": "view_…"
 }
 ```
 
 The system owns the ID, timestamps, and optimistic revision. The caller owns the name and metadata. Metadata may be any JSON value, although objects are usually the most queryable convention.
+
+An Item may carry an optional `view_id` reference to an existing View, kept outside the metadata envelope. The reference is checked for existence and resource kind at write time only: it never changes how metadata is stored, queried, or validated, and JSON keys inside metadata named `view` or `view_id` remain inert client data.
 
 ### Note
 
@@ -151,7 +154,7 @@ A Note belongs to exactly one Item. Terms such as `decision`, `attempt`, `report
 }
 ```
 
-A View stores a bounded UTF-8 HTML document (`renderer`) as an inert string. Stuff stores and version-revs it; it never executes or sandboxes the document, and no Item currently points at a View. The optional `schema` field is an advisory reference to an existing Schema name; it documents a convention and is checked only for existence at write time.
+A View stores a bounded UTF-8 HTML document (`renderer`) as an inert string. Stuff stores and version-revs it; it never executes or sandboxes the document. Items may reference a View through the optional `view_id` field; the reference is existence- and kind-checked at write time and carries no rendering or query behavior of its own. The optional `schema` field is an advisory reference to an existing Schema name; it documents a convention and is checked only for existence at write time, and it is never applied to an Item's metadata automatically.
 
 ```bash
 view=$(stuff view add "Migration report" @report.html --schema report-html)
@@ -239,9 +242,9 @@ stuff describe --pretty
 ## CLI reference
 
 ```text
-stuff add NAME [--meta JSON|@FILE] [--validate SCHEMA]
+stuff add NAME [--meta JSON|@FILE] [--validate SCHEMA] [--view VIEW]
 stuff get ITEM
-stuff update ITEM [--name NAME] [--meta JSON|@FILE] [--revision REV] [--validate SCHEMA]
+stuff update ITEM [--name NAME] [--meta JSON|@FILE] [--view VIEW | --clear-view] [--revision REV] [--validate SCHEMA]
 stuff find [@QUERY | stdin]
 
 stuff note add ITEM [TEXT] [--meta JSON|@FILE] [--attach FILE ...]
@@ -323,4 +326,4 @@ nix build
 nix flake check
 ```
 
-The test suite covers HTTP and CLI contracts, optimistic revision conflicts, point-in-time validation and drift, arbitrary JSON metadata, View rendering documents (bounded UTF-8, revision conflicts, advisory schema references), Mango passthrough, authentication, and query correction. Live integration is tested against CouchDB 3.x.
+The test suite covers HTTP and CLI contracts, optimistic revision conflicts, point-in-time validation and drift, arbitrary JSON metadata, View rendering documents (bounded UTF-8, revision conflicts, advisory schema references), Item-to-View references (round-trip, unknown and wrong-kind rejection, revision conflicts, inert metadata keys), Mango passthrough, authentication, and query correction. Live integration is tested against CouchDB 3.x.

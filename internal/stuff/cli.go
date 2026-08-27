@@ -101,30 +101,37 @@ func (c *CLI) add(ctx context.Context, args []string) error {
 	fs := newFlags("add")
 	meta := fs.String("meta", "{}", "JSON or @FILE")
 	validate := fs.String("validate", "", "Schema name")
+	view := fs.String("view", "", "existing View ID")
 	if err := fs.Parse(flagsFirst(args)); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return usage("stuff add NAME [--meta JSON|@FILE] [--validate SCHEMA]")
+		return usage("stuff add NAME [--meta JSON|@FILE] [--validate SCHEMA] [--view VIEW]")
 	}
 	m, err := readAnyJSONSource(*meta, c.In)
 	if err != nil {
 		return fmt.Errorf("metadata: %w", err)
 	}
-	return c.create(ctx, "/v1/items", Document{"name": fs.Arg(0), "metadata": m, "validate": *validate})
+	body := Document{"name": fs.Arg(0), "metadata": m, "validate": *validate}
+	if *view != "" {
+		body["view_id"] = *view
+	}
+	return c.create(ctx, "/v1/items", body)
 }
 
 func (c *CLI) update(ctx context.Context, args []string, pretty bool) error {
 	fs := newFlags("update")
 	name := fs.String("name", "", "new name")
 	meta := fs.String("meta", "", "JSON or @FILE")
+	view := fs.String("view", "", "existing View ID")
+	clearView := fs.Bool("clear-view", false, "remove the View reference")
 	rev := fs.String("revision", "", "optimistic revision")
 	validate := fs.String("validate", "", "Schema name")
 	if err := fs.Parse(flagsFirst(args)); err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
-		return usage("stuff update ITEM [--name NAME] [--meta JSON|@FILE] [--revision REV] [--validate SCHEMA]")
+	if fs.NArg() != 1 || (*view != "" && *clearView) {
+		return usage("stuff update ITEM [--name NAME] [--meta JSON|@FILE] [--view VIEW | --clear-view] [--revision REV] [--validate SCHEMA]")
 	}
 	body := Document{"revision": *rev, "validate": *validate}
 	if *name != "" {
@@ -136,6 +143,11 @@ func (c *CLI) update(ctx context.Context, args []string, pretty bool) error {
 			return fmt.Errorf("metadata: %w", e)
 		}
 		body["metadata"] = m
+	}
+	if *view != "" {
+		body["view_id"] = *view
+	} else if *clearView {
+		body["view_id"] = nil
 	}
 	return c.requestJSON(ctx, http.MethodPatch, "/v1/items/"+fs.Arg(0), body, pretty, false)
 }
@@ -481,9 +493,9 @@ func usage(s string) error         { return usageError(s) }
 const Help = `Stuff stores inert Items, Notes, and Views with arbitrary metadata.
 
 Usage:
-  stuff add NAME [--meta JSON|@FILE] [--validate SCHEMA]
+  stuff add NAME [--meta JSON|@FILE] [--validate SCHEMA] [--view VIEW]
   stuff get ITEM
-  stuff update ITEM [--name NAME] [--meta JSON|@FILE] [--revision REV] [--validate SCHEMA]
+  stuff update ITEM [--name NAME] [--meta JSON|@FILE] [--view VIEW | --clear-view] [--revision REV] [--validate SCHEMA]
   stuff find [@QUERY | stdin]
   stuff note add ITEM [TEXT] [--meta JSON|@FILE] [--attach FILE ...]
   stuff note get NOTE

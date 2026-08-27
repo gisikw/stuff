@@ -211,11 +211,39 @@ func metadata(v any) (any, error) {
 	return v, nil
 }
 
+func (s *Server) requireView(ctx context.Context, ref string) error {
+	doc, err := s.store.Get(ctx, ref)
+	if err != nil {
+		var se *StoreError
+		if errors.As(err, &se) && se.Status == http.StatusNotFound {
+			return bad("view_id", fmt.Sprintf("View %q does not exist", ref), "a View ID from `stuff view add` or `stuff view get`")
+		}
+		return err
+	}
+	if doc["stuff_kind"] != "view" {
+		return bad("view_id", "view_id must reference a View, not a "+kindLabel(doc["stuff_kind"]), "a View ID from `stuff view add` or `stuff view get`")
+	}
+	return nil
+}
+
+func kindLabel(kind any) string {
+	switch kind {
+	case "item":
+		return "Item"
+	case "note":
+		return "Note"
+	case "schema":
+		return "Schema"
+	}
+	return "record"
+}
+
 func (s *Server) createItem(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
 		Name     string       `json:"name"`
 		Metadata optionalJSON `json:"metadata"`
 		Validate string       `json:"validate"`
+		ViewID   optionalJSON `json:"view_id"`
 	}
 	if err := decodeJSON(r, MaxJSONBytes, &in); err != nil {
 		return err
@@ -237,12 +265,29 @@ func (s *Server) createItem(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 	}
+	viewRef := ""
+	if in.ViewID.Present && in.ViewID.Value != nil {
+		value, ok := in.ViewID.Value.(string)
+		if !ok {
+			return bad("view_id", "view_id must be a string or null", "an existing View ID or null")
+		}
+		if value == "" {
+			return bad("view_id", "view_id cannot be empty", "an existing View ID, null, or an omitted field")
+		}
+		if err := s.requireView(r.Context(), value); err != nil {
+			return err
+		}
+		viewRef = value
+	}
 	id, err := newID("item_")
 	if err != nil {
 		return err
 	}
 	now := s.now().UTC().Format(time.RFC3339Nano)
 	doc := Document{"stuff_kind": "item", "name": in.Name, "created_at": now, "updated_at": now, "metadata": meta}
+	if viewRef != "" {
+		doc["view_id"] = viewRef
+	}
 	rev, err := s.store.Create(r.Context(), id, doc)
 	if err != nil {
 		return err
@@ -269,6 +314,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, id string) e
 		Metadata optionalJSON `json:"metadata"`
 		Revision string       `json:"revision"`
 		Validate string       `json:"validate"`
+		ViewID   optionalJSON `json:"view_id"`
 	}
 	if err := decodeJSON(r, MaxJSONBytes, &in); err != nil {
 		return err
@@ -280,8 +326,8 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, id string) e
 	if doc["stuff_kind"] != "item" {
 		return &StoreError{Status: 404, Reason: "Item not found"}
 	}
-	if in.Name == nil && !in.Metadata.Present {
-		return bad("$", "update changes nothing", "provide name and/or metadata")
+	if in.Name == nil && !in.Metadata.Present && !in.ViewID.Present {
+		return bad("$", "update changes nothing", "provide name, metadata, and/or view_id")
 	}
 	if in.Name != nil {
 		n := strings.TrimSpace(*in.Name)
@@ -296,6 +342,23 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, id string) e
 			return e
 		}
 		doc["metadata"] = meta
+	}
+	if in.ViewID.Present {
+		if in.ViewID.Value == nil {
+			delete(doc, "view_id")
+		} else {
+			value, ok := in.ViewID.Value.(string)
+			if !ok {
+				return bad("view_id", "view_id must be a string or null", "an existing View ID or null")
+			}
+			if value == "" {
+				return bad("view_id", "view_id cannot be empty", "an existing View ID or null")
+			}
+			if err := s.requireView(r.Context(), value); err != nil {
+				return err
+			}
+			doc["view_id"] = value
+		}
 	}
 	meta := doc["metadata"]
 	if in.Validate != "" {
@@ -785,7 +848,7 @@ func (s *Server) describe(w http.ResponseWriter, r *http.Request) error {
 	}
 	out := Document{
 		"items": lenDocs(items), "notes": lenDocs(notes), "sample_limit": MaxPageSize,
-		"envelopes":       Document{"item": []any{"id", "name", "created_at", "updated_at", "revision", "metadata"}, "note": []any{"id", "item_id", "created_at", "updated_at", "revision", "text", "metadata", "attachments"}, "view": []any{"id", "name", "created_at", "updated_at", "revision", "renderer", "schema"}},
+		"envelopes":       Document{"item": []any{"id", "name", "created_at", "updated_at", "revision", "metadata", "view_id"}, "note": []any{"id", "item_id", "created_at", "updated_at", "revision", "text", "metadata", "attachments"}, "view": []any{"id", "name", "created_at", "updated_at", "revision", "renderer", "schema"}},
 		"mango":           Document{"version": "CouchDB 3.x Mango", "operators": []any{"$eq", "$ne", "$gt", "$gte", "$lt", "$lte", "$exists", "$type", "$in", "$nin", "$all", "$size", "$elemMatch", "$allMatch", "$and", "$or", "$not", "$nor", "$beginsWith", "$regex", "$mod", "$keyMapMatch", "$text"}},
 		"limits":          Document{"limit_max": MaxPageSize, "selector_bytes_max": MaxQueryBytes, "metadata_bytes_max": MaxJSONBytes, "attachment_bytes_max": MaxAttachmentBytes, "renderer_bytes_max": MaxRendererBytes, "response_bytes_max": MaxResponseBytes},
 		"observed_fields": fields, "indexes": indexes,
