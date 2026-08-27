@@ -82,6 +82,10 @@ func TestReadPaginationAndDetailMarkdownSafety(t *testing.T) {
 	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "page 2 of 2") {
 		t.Fatalf("second page: %d %s", page.Code, page.Body.String())
 	}
+	activityScript := htmlRequest(h, http.MethodGet, "/read/activity.js")
+	if activityScript.Code != http.StatusOK || !strings.Contains(activityScript.Body.String(), "stuff.read.lastSeen") {
+		t.Fatalf("last-seen helper: %d %s", activityScript.Code, activityScript.Body.String())
+	}
 
 	detail := htmlRequest(h, http.MethodGet, "/read/items/item_a")
 	body := detail.Body.String()

@@ -54,6 +54,12 @@ func (s *Server) serveReadRoute(w http.ResponseWriter, r *http.Request) bool {
 	case r.URL.Path == "/read":
 		s.serveReadIndex(w, r)
 		return true
+	case r.URL.Path == "/read/activity.js":
+		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		_, _ = w.Write([]byte(readActivityScript))
+		return true
 	case strings.HasPrefix(r.URL.Path, "/read/items/"):
 		id, ok := onePathPart(strings.TrimPrefix(r.URL.Path, "/read/items/"))
 		if !ok {
@@ -363,7 +369,7 @@ func renderConservativeMarkdown(source string) template.HTML {
 
 func (s *Server) renderRead(w http.ResponseWriter, name string, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if err := readTemplates.ExecuteTemplate(w, name, data); err != nil {
@@ -387,10 +393,34 @@ func readHTTPError(w http.ResponseWriter, status int, message string) {
 	http.Error(w, message, status)
 }
 
+const readActivityScript = `(() => {
+  try {
+    const key = "stuff.read.lastSeen";
+    const previous = localStorage.getItem(key);
+    const cards = Array.from(document.querySelectorAll("[data-activity]"));
+    const previousTime = previous ? Date.parse(previous) : NaN;
+    if (Number.isFinite(previousTime)) {
+      const firstSeen = cards.find((card) => Date.parse(card.dataset.activity) <= previousTime);
+      if (firstSeen) {
+        const divider = document.createElement("div");
+        divider.className = "seen-divider";
+        divider.textContent = "Seen before your last visit";
+        firstSeen.before(divider);
+      }
+    }
+    if (cards.length && Number.isFinite(Date.parse(cards[0].dataset.activity))) {
+      localStorage.setItem(key, cards[0].dataset.activity);
+    }
+  } catch (_) {
+    // Reading Stuff must keep working when storage is disabled.
+  }
+})();
+`
+
 const readTemplateText = `
 {{define "head"}}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Stuff</title><style>
-:root{color-scheme:light;--ink:#25231f;--muted:#716d64;--line:#dedbd3;--paper:#faf9f6;--card:#fff;--accent:#385d54}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}main{width:min(880px,calc(100% - 2rem));margin:3rem auto 6rem}header{margin-bottom:2rem}h1,h2,h3{line-height:1.2}h1{font-size:2rem;margin:.2rem 0}a{color:var(--accent)}.subtle,.stamp{color:var(--muted);font-size:.9rem}.card,.note{display:block;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1rem 1.15rem;margin:.8rem 0;text-decoration:none;color:inherit}.card:hover{border-color:var(--accent)}.card h2,.note h2{font-size:1.12rem;margin:0 0 .35rem}.warning{border-left:4px solid #b58134;background:#fff7e9;padding:.7rem 1rem}.pager{display:flex;justify-content:space-between;margin-top:1.5rem}.meta{white-space:pre-wrap;overflow-wrap:anywhere;background:#f1f0eb;padding:.8rem;border-radius:6px;font:13px/1.45 ui-monospace,monospace}.markdown pre{overflow:auto;background:#f1f0eb;padding:.8rem;border-radius:6px}.markdown code{font-family:ui-monospace,monospace}.markdown h1{font-size:1.35rem}.markdown h2{font-size:1.2rem}.markdown h3{font-size:1.08rem}.attachments{padding-left:1.2rem}.back{display:inline-block;margin-bottom:1rem}@media(max-width:520px){main{margin-top:1.5rem}.stamp{display:block}}</style></head><body><main>{{end}}
+:root{color-scheme:light;--ink:#25231f;--muted:#716d64;--line:#dedbd3;--paper:#faf9f6;--card:#fff;--accent:#385d54}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}main{width:min(880px,calc(100% - 2rem));margin:3rem auto 6rem}header{margin-bottom:2rem}h1,h2,h3{line-height:1.2}h1{font-size:2rem;margin:.2rem 0}a{color:var(--accent)}.subtle,.stamp{color:var(--muted);font-size:.9rem}.card,.note{display:block;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1rem 1.15rem;margin:.8rem 0;text-decoration:none;color:inherit}.card:hover{border-color:var(--accent)}.card h2,.note h2{font-size:1.12rem;margin:0 0 .35rem}.warning{border-left:4px solid #b58134;background:#fff7e9;padding:.7rem 1rem}.pager{display:flex;justify-content:space-between;margin-top:1.5rem}.meta{white-space:pre-wrap;overflow-wrap:anywhere;background:#f1f0eb;padding:.8rem;border-radius:6px;font:13px/1.45 ui-monospace,monospace}.markdown pre{overflow:auto;background:#f1f0eb;padding:.8rem;border-radius:6px}.markdown code{font-family:ui-monospace,monospace}.markdown h1{font-size:1.35rem}.markdown h2{font-size:1.2rem}.markdown h3{font-size:1.08rem}.attachments{padding-left:1.2rem}.back{display:inline-block;margin-bottom:1rem}.seen-divider{display:flex;align-items:center;gap:.7rem;color:var(--muted);font-size:.82rem;margin:1.4rem 0}.seen-divider:before,.seen-divider:after{content:"";height:1px;background:var(--line);flex:1}@media(max-width:520px){main{margin-top:1.5rem}.stamp{display:block}}</style></head><body><main>{{end}}
 {{define "foot"}}</main></body></html>{{end}}
-{{define "index"}}{{template "head" .}}<header><div class="subtle">Durable Items and Notes</div><h1>Stuff</h1><div class="subtle">Recently active · page {{.Page}} of {{.Pages}}</div></header>{{if .Truncated}}<p class="warning">This view is bounded to the newest available sample of 200 Items and 200 Notes; older activity may be omitted.</p>{{end}}{{if .Items}}{{range .Items}}<a class="card" href="{{.Path}}"><h2>{{.Name}}</h2><div class="stamp">{{.ActivityAt}} · {{.ActivitySource}}</div><div class="subtle">{{.ID}}</div></a>{{end}}{{else}}<p>No Items yet.</p>{{end}}<nav class="pager"><span>{{if .HasPrevious}}<a href="/read?page={{.Previous}}">← Newer</a>{{end}}</span><span>{{if .HasNext}}<a href="/read?page={{.Next}}">Older →</a>{{end}}</span></nav>{{template "foot" .}}{{end}}
+{{define "index"}}{{template "head" .}}<header><div class="subtle">Durable Items and Notes</div><h1>Stuff</h1><div class="subtle">Recently active · page {{.Page}} of {{.Pages}}</div></header>{{if .Truncated}}<p class="warning">This view is bounded to a sample of 200 Items and 200 Notes; activity outside that sample may be omitted.</p>{{end}}{{if .Items}}{{range .Items}}<a class="card" data-activity="{{.ActivityAt}}" href="{{.Path}}"><h2>{{.Name}}</h2><div class="stamp">{{.ActivityAt}} · {{.ActivitySource}}</div><div class="subtle">{{.ID}}</div></a>{{end}}{{else}}<p>No Items yet.</p>{{end}}<nav class="pager"><span>{{if .HasPrevious}}<a href="/read?page={{.Previous}}">← Newer</a>{{end}}</span><span>{{if .HasNext}}<a href="/read?page={{.Next}}">Older →</a>{{end}}</span></nav><script src="/read/activity.js" defer></script>{{template "foot" .}}{{end}}
 {{define "detail"}}{{template "head" .}}<a class="back" href="/read">← All Items</a><header><h1>{{.Item.Name}}</h1><div class="subtle">{{.Item.ID}}</div><div class="stamp">Created {{.Item.CreatedAt}} · Item updated {{.Item.UpdatedAt}}</div></header><h2>Metadata</h2><pre class="meta">{{.Item.Metadata}}</pre><h2>Notes</h2>{{if .Truncated}}<p class="warning">Only the first 200 matching Notes are shown.</p>{{end}}{{if .Notes}}{{range .Notes}}<article class="note"><h2>{{.CreatedAt}}</h2><div class="subtle">{{.ID}}</div>{{if .Body}}<div class="markdown">{{.Body}}</div>{{end}}<details><summary>Metadata</summary><pre class="meta">{{.Metadata}}</pre></details>{{if .Attachments}}<h3>Attachments</h3><ul class="attachments">{{range .Attachments}}<li><a href="{{.Path}}">{{.Name}}</a> <span class="subtle">{{.MediaType}} · {{.Bytes}} bytes · download</span></li>{{end}}</ul>{{end}}</article>{{end}}{{else}}<p>No Notes yet.</p>{{end}}{{template "foot" .}}{{end}}
 `
