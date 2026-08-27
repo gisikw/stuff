@@ -86,6 +86,17 @@ stuff get "$item" --pretty
 
 Create commands print only the new ID, making shell composition reliable.
 
+## Browser reading surface
+
+`stuff serve` includes a read-only browser surface:
+
+- `/read` lists Items by effective activity, including activity from linked Notes.
+- `/read/items/<item-id>` shows an Item, its metadata, Notes, and attachment downloads.
+
+The activity view deliberately reads a bounded sample of at most 200 Items and 200 Notes, then paginates that sample locally. It displays a warning when either bound is reached. Note text uses a conservative Markdown renderer that treats stored HTML as inert text. Attachments retain forced-download disposition, a sandboxing content security policy, and `nosniff`; active HTML is never rendered in the application origin.
+
+The `/read` routes are unauthenticated at the application layer so deployments can put them behind an identity-aware reverse proxy without exposing the API bearer token to a browser. Deployments **must** bind Stuff to a trusted interface or identity-gate these routes at the proxy. All `/v1` data and mutation routes remain protected by `STUFF_TOKEN` when configured.
+
 ## Data model
 
 ### Item
