@@ -154,7 +154,21 @@ A Note belongs to exactly one Item. Terms such as `decision`, `attempt`, `report
 }
 ```
 
-A View stores a bounded UTF-8 HTML document (`renderer`) as an inert string. Stuff stores and version-revs it; it never executes or sandboxes the document. Items may reference a View through the optional `view_id` field; the reference is existence- and kind-checked at write time and carries no rendering or query behavior of its own. The optional `schema` field is an advisory reference to an existing Schema name; it documents a convention and is checked only for existence at write time, and it is never applied to an Item's metadata automatically.
+A View stores a bounded UTF-8 HTML document (`renderer`) as an inert string. The storage API never executes it. Items may reference a View through the optional `view_id` field; the reference is existence- and kind-checked at write time and never changes metadata storage, querying, or validation. The optional `schema` field is an advisory reference to an existing Schema name; it is checked only for existence at write time and is never applied to Item metadata automatically.
+
+When `/read/items/ITEM` encounters a `view_id`, the browser surface runs that renderer inside a doubly sandboxed iframe. The iframe has scripts and inline styles but no same-origin identity, network, forms, workers, child frames, top navigation, or Stuff credential. A first-party host sends one immutable initial snapshot with `postMessage`:
+
+```json
+{
+  "type": "stuff:view-snapshot",
+  "version": 1,
+  "item": { "id": "item_…", "metadata": {} },
+  "notes": [],
+  "truncated": false
+}
+```
+
+The snapshot contains the public Item envelope and a bounded set of linked public Note envelopes. Attachment descriptors are included; attachment bodies and credentials are not. There is no renderer-to-server RPC in this version. `?plain=1` always bypasses the renderer, and stale View references visibly fall back to the generic Item page.
 
 ```bash
 view=$(stuff view add "Migration report" @report.html --schema report-html)
