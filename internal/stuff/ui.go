@@ -449,8 +449,12 @@ const readActivityScript = `(() => {
         firstSeen.before(divider);
       }
     }
-    if (cards.length && Number.isFinite(Date.parse(cards[0].dataset.activity))) {
-      localStorage.setItem(key, cards[0].dataset.activity);
+    if (cards.length) {
+      const newest = cards[0].dataset.activity;
+      const newestTime = Date.parse(newest);
+      if (Number.isFinite(newestTime) && (!Number.isFinite(previousTime) || newestTime > previousTime)) {
+        localStorage.setItem(key, newest);
+      }
     }
   } catch (_) {
     // Reading Stuff must keep working when storage is disabled.
