@@ -98,6 +98,10 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		err = s.get(w, r, parts[1], "view")
 	case len(parts) == 2 && parts[0] == "views" && r.Method == http.MethodPatch:
 		err = s.updateView(w, r, parts[1])
+	case p == "config/reader" && r.Method == http.MethodGet:
+		err = s.getReaderConfig(w, r)
+	case p == "config/reader" && r.Method == http.MethodPatch:
+		err = s.updateReaderConfig(w, r)
 	case p == "schemas" && r.Method == http.MethodGet:
 		err = s.listSchemas(w, r)
 	case p == "schemas" && r.Method == http.MethodPost:

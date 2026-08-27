@@ -91,12 +91,13 @@ Create commands print only the new ID, making shell composition reliable.
 
 `stuff serve` includes a read-only browser surface:
 
-- `/read` lists Items by effective activity, including activity from linked Notes.
-- `/read/items/<item-id>` shows an Item, its metadata, Notes, and attachment downloads.
+- `/read` permanently lists Items by effective activity, including activity from linked Notes.
+- `/read/items/<item-id>` shows the generic Item detail or its explicitly referenced View.
+- `/` renders the ReaderConfig homepage Item when configured and otherwise redirects to `/read`.
 
 The activity view deliberately reads a bounded sample of at most 200 Items and 200 Notes, then paginates that sample locally. It displays a warning when either bound is reached. Note text uses a conservative Markdown renderer that treats stored HTML as inert text. Attachments retain a forced-download path. HTML attachments also have an explicit full-page view whose response is forced into an opaque CSP sandbox: scripts and external resources are disabled, inline styles and data images/fonts are allowed, and `nosniff` remains enabled.
 
-The `/read` routes are unauthenticated at the application layer so deployments can put them behind an identity-aware reverse proxy without exposing the API bearer token to a browser. Deployments **must** bind Stuff to a trusted interface or identity-gate these routes at the proxy. All `/v1` data and mutation routes remain protected by `STUFF_TOKEN` when configured.
+The browser routes are unauthenticated at the application layer so deployments can put them behind an identity-aware reverse proxy without exposing the API bearer token to a browser. Deployments **must** bind Stuff to a trusted interface or identity-gate these routes at the proxy. All `/v1` data and mutation routes, including ReaderConfig, remain protected by `STUFF_TOKEN` when configured.
 
 ## Data model
 
@@ -176,6 +177,18 @@ stuff view get "$view"
 stuff view update "$view" @report-v2.html --name "Migration report v2" --revision 1-…
 stuff view update "$view" @report-v2.html --clear-schema
 ```
+
+### ReaderConfig
+
+ReaderConfig is a revisioned service-configuration resource, not an Item and not metadata. Its optional `home_item_id` selects the ordinary Item rendered at `/`. An absent, cleared, stale, or invalid reference safely falls back to `/read`; reads never create configuration data.
+
+```bash
+stuff config get
+stuff config set-home item_…
+stuff config clear-home
+```
+
+`/read` remains the fixed generic recovery surface even when a custom homepage is configured.
 
 ### Attachments
 
@@ -268,6 +281,10 @@ stuff note find [@QUERY | stdin]
 stuff view add NAME @RENDERER [--schema SCHEMA]
 stuff view get VIEW
 stuff view update VIEW @RENDERER [--name NAME] [--schema SCHEMA | --clear-schema] [--revision REV]
+
+stuff config get
+stuff config set-home ITEM [--revision REV]
+stuff config clear-home [--revision REV]
 
 stuff schema add NAME @SCHEMA
 stuff schema get NAME

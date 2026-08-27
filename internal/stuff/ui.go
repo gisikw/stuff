@@ -53,7 +53,7 @@ type readDetailData struct {
 func (s *Server) serveReadRoute(w http.ResponseWriter, r *http.Request) bool {
 	switch {
 	case r.URL.Path == "/":
-		http.Redirect(w, r, "/read", http.StatusSeeOther)
+		s.serveReadHome(w, r)
 		return true
 	case r.URL.Path == "/read":
 		s.serveReadIndex(w, r)

@@ -81,6 +81,8 @@ func (c *CLI) Run(ctx context.Context, args []string) error {
 		return c.note(ctx, args[1:], pretty)
 	case "view":
 		return c.view(ctx, args[1:], pretty)
+	case "config":
+		return c.config(ctx, args[1:], pretty)
 	case "schema":
 		return c.schema(ctx, args[1:], pretty)
 	case "schemas":
@@ -265,6 +267,41 @@ func (c *CLI) view(ctx context.Context, args []string, pretty bool) error {
 		return c.requestJSON(ctx, http.MethodPatch, "/v1/views/"+fs.Arg(0), body, pretty, false)
 	default:
 		return usage("stuff view add|get|update ...")
+	}
+}
+
+func (c *CLI) config(ctx context.Context, args []string, pretty bool) error {
+	if len(args) == 0 {
+		return usage("stuff config get|set-home|clear-home ...")
+	}
+	switch args[0] {
+	case "get":
+		if len(args) != 1 {
+			return usage("stuff config get")
+		}
+		return c.getJSON(ctx, "/v1/config/reader", pretty)
+	case "set-home":
+		fs := newFlags("config set-home")
+		revision := fs.String("revision", "", "optimistic revision")
+		if err := fs.Parse(flagsFirst(args[1:])); err != nil {
+			return err
+		}
+		if fs.NArg() != 1 {
+			return usage("stuff config set-home ITEM [--revision REV]")
+		}
+		return c.requestJSON(ctx, http.MethodPatch, "/v1/config/reader", Document{"home_item_id": fs.Arg(0), "revision": *revision}, pretty, false)
+	case "clear-home":
+		fs := newFlags("config clear-home")
+		revision := fs.String("revision", "", "optimistic revision")
+		if err := fs.Parse(flagsFirst(args[1:])); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return usage("stuff config clear-home [--revision REV]")
+		}
+		return c.requestJSON(ctx, http.MethodPatch, "/v1/config/reader", Document{"home_item_id": nil, "revision": *revision}, pretty, false)
+	default:
+		return usage("stuff config get|set-home|clear-home ...")
 	}
 }
 
@@ -503,6 +540,9 @@ Usage:
   stuff view add NAME @RENDERER [--schema SCHEMA]
   stuff view get VIEW
   stuff view update VIEW @RENDERER [--name NAME] [--schema SCHEMA | --clear-schema] [--revision REV]
+  stuff config get
+  stuff config set-home ITEM [--revision REV]
+  stuff config clear-home [--revision REV]
   stuff schema add NAME @SCHEMA
   stuff schema get NAME
   stuff schema check NAME ITEM
