@@ -7,16 +7,17 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 var readViewHostTemplate = template.Must(template.New("view-host").Parse(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.ItemName}} · Stuff</title><style>
 :root{color-scheme:light;--ink:#25231f;--muted:#716d64;--line:#dedbd3;--paper:#faf9f6;--accent:#385d54}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.45 ui-sans-serif,system-ui,-apple-system,sans-serif}.bar{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.65rem 1rem;border-bottom:1px solid var(--line);background:#fff}.bar a{color:var(--accent)}.title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.subtle{color:var(--muted);font-size:.85rem}iframe{display:block;width:100%;height:calc(100vh - 3.25rem);border:0;background:#fff}@media(max-width:520px){.bar{align-items:flex-start;flex-direction:column;gap:.25rem}iframe{height:calc(100vh - 4.75rem)}}
-</style></head><body><header class="bar"><div class="title"><strong>{{.ItemName}}</strong> <span class="subtle">· {{.ViewName}}</span></div><a href="{{.PlainPath}}">Safe generic view</a></header><iframe id="stuff-view" title="{{.ViewName}}" sandbox="allow-scripts" data-frame="{{.FramePath}}" data-snapshot="{{.SnapshotPath}}"></iframe><script src="/read/view-host.js" defer></script></body></html>`))
+</style></head><body><header class="bar"><div class="title"><strong>{{.ItemName}}</strong> <span class="subtle">· {{.ViewName}}</span></div><a href="{{.PlainPath}}">Safe generic view</a></header><iframe id="stuff-view" title="{{.ViewName}}" sandbox="allow-scripts" data-frame="{{.FramePath}}" data-snapshot="{{.SnapshotPath}}" data-query="{{.QueryPath}}"></iframe><script src="/read/view-host.js" defer></script></body></html>`))
 
 type readViewHostData struct {
-	ItemName, ViewName, PlainPath, FramePath, SnapshotPath string
+	ItemName, ViewName, PlainPath, FramePath, SnapshotPath, QueryPath string
 }
 
 func (s *Server) maybeServeReadViewHost(w http.ResponseWriter, r *http.Request, item Document) (bool, string, error) {
@@ -45,6 +46,7 @@ func (s *Server) maybeServeReadViewHost(w http.ResponseWriter, r *http.Request, 
 		PlainPath:    "/read/items/" + escaped + "?plain=1",
 		FramePath:    "/read/items/" + escaped + "/view",
 		SnapshotPath: "/read/items/" + escaped + "/snapshot",
+		QueryPath:    "/read/items/" + escaped + "/query/",
 	}
 	renderReadViewHost(w, data)
 	return true, "", nil
@@ -75,12 +77,82 @@ func serveReadViewHostScript(w http.ResponseWriter) {
       if (!response.ok) throw new Error("snapshot unavailable");
       return response.json();
     });
+  const post = (message) => frame.contentWindow.postMessage(message, "*");
   frame.addEventListener("load", () => {
-    snapshot.then((message) => frame.contentWindow.postMessage(message, "*")).catch(() => {});
+    snapshot.then(post).catch(() => {});
+  });
+  let active = 0;
+  window.addEventListener("message", async (event) => {
+    if (event.source !== frame.contentWindow) return;
+    const message = event.data;
+    if (!message || message.type !== "stuff:view-query" || typeof message.request_id !== "string" || message.request_id.length > 128) return;
+    if ((message.resource !== "items" && message.resource !== "notes") || !message.query || typeof message.query !== "object" || Array.isArray(message.query)) return;
+    if (active >= 4) {
+      post({type: "stuff:view-query-result", request_id: message.request_id, ok: false, error: "too many concurrent queries"});
+      return;
+    }
+    let encoded;
+    try {
+      encoded = JSON.stringify(message.query);
+    } catch (_) {
+      return;
+    }
+    if (encoded.length > 65536) {
+      post({type: "stuff:view-query-result", request_id: message.request_id, ok: false, error: "query exceeds 65536 bytes"});
+      return;
+    }
+    active++;
+    try {
+      const response = await fetch(frame.dataset.query + message.resource, {
+        method: "POST", credentials: "same-origin",
+        headers: {Accept: "application/json", "Content-Type": "application/json"}, body: encoded
+      });
+      const result = await response.json();
+      post({type: "stuff:view-query-result", request_id: message.request_id, ok: response.ok, result});
+    } catch (_) {
+      post({type: "stuff:view-query-result", request_id: message.request_id, ok: false, error: "query unavailable"});
+    } finally {
+      active--;
+    }
   });
   frame.src = frame.dataset.frame;
 })();
 `))
+}
+
+func (s *Server) serveReadViewQueryRoute(w http.ResponseWriter, r *http.Request) bool {
+	const prefix = "/read/items/"
+	if !strings.HasPrefix(r.URL.Path, prefix) {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, prefix), "/")
+	if len(parts) != 3 || parts[1] != "query" || (parts[2] != "items" && parts[2] != "notes") {
+		return false
+	}
+	itemID, err := url.PathUnescape(parts[0])
+	if err != nil || itemID == "" || strings.Contains(itemID, "/") {
+		return false
+	}
+	_, view, err := s.resolveReadView(r.Context(), itemID)
+	if err != nil {
+		w.Header().Set("Cache-Control", "no-store")
+		s.handleError(w, err)
+		return true
+	}
+	if !viewHasCapability(view, "find_"+parts[2]) {
+		w.Header().Set("Cache-Control", "no-store")
+		s.handleError(w, &apiError{status: http.StatusForbidden, path: "capability", reason: "View is not allowed to query " + parts[2], expected: "grant the explicit find_" + parts[2] + " View capability"})
+		return true
+	}
+	kind := strings.TrimSuffix(parts[2], "s")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'self'")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if err := s.find(w, r, kind); err != nil {
+		s.handleError(w, err)
+	}
+	return true
 }
 
 func (s *Server) resolveReadView(ctx context.Context, itemID string) (Document, Document, error) {

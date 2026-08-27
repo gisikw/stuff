@@ -62,6 +62,9 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && s.serveReadRoute(w, r) {
 		return
 	}
+	if r.Method == http.MethodPost && s.serveReadViewQueryRoute(w, r) {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if s.token != "" && r.Header.Get("Authorization") != "Bearer "+s.token {
 		writeError(w, http.StatusUnauthorized, "authorization", "missing or invalid bearer token", "set STUFF_TOKEN to the service token")
@@ -575,11 +578,51 @@ func (s *Server) requireSchema(ctx context.Context, name string) error {
 	return nil
 }
 
+func normalizeViewCapabilities(value any) ([]any, error) {
+	if value == nil {
+		return nil, nil
+	}
+	raw, ok := value.([]any)
+	if !ok {
+		return nil, bad("capabilities", "capabilities must be an array", `["find_items","find_notes"]`)
+	}
+	allowed := map[string]bool{"find_items": true, "find_notes": true}
+	seen := make(map[string]bool, len(raw))
+	values := make([]string, 0, len(raw))
+	for _, entry := range raw {
+		capability, ok := entry.(string)
+		if !ok || !allowed[capability] {
+			return nil, bad("capabilities", "unknown View capability", "find_items and/or find_notes")
+		}
+		if !seen[capability] {
+			seen[capability] = true
+			values = append(values, capability)
+		}
+	}
+	sort.Strings(values)
+	out := make([]any, len(values))
+	for i, value := range values {
+		out[i] = value
+	}
+	return out, nil
+}
+
+func viewHasCapability(view Document, capability string) bool {
+	raw, _ := view["capabilities"].([]any)
+	for _, value := range raw {
+		if value == capability {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) createView(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
-		Name     string       `json:"name"`
-		Renderer string       `json:"renderer"`
-		Schema   optionalJSON `json:"schema"`
+		Name         string       `json:"name"`
+		Renderer     string       `json:"renderer"`
+		Schema       optionalJSON `json:"schema"`
+		Capabilities optionalJSON `json:"capabilities"`
 	}
 	if err := decodeUTF8JSON(r, MaxRendererBytes*6+MaxJSONBytes, &in); err != nil {
 		return err
@@ -605,6 +648,10 @@ func (s *Server) createView(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 	}
+	capabilities, err := normalizeViewCapabilities(in.Capabilities.Value)
+	if err != nil {
+		return err
+	}
 	id, err := newID("view_")
 	if err != nil {
 		return err
@@ -613,6 +660,9 @@ func (s *Server) createView(w http.ResponseWriter, r *http.Request) error {
 	doc := Document{"stuff_kind": "view", "name": in.Name, "renderer": in.Renderer, "created_at": now, "updated_at": now}
 	if schemaRef != "" {
 		doc["schema"] = schemaRef
+	}
+	if len(capabilities) > 0 {
+		doc["capabilities"] = capabilities
 	}
 	rev, err := s.store.Create(r.Context(), id, doc)
 	if err != nil {
@@ -624,10 +674,11 @@ func (s *Server) createView(w http.ResponseWriter, r *http.Request) error {
 
 func (s *Server) updateView(w http.ResponseWriter, r *http.Request, id string) error {
 	var in struct {
-		Name     *string      `json:"name"`
-		Renderer *string      `json:"renderer"`
-		Schema   optionalJSON `json:"schema"`
-		Revision string       `json:"revision"`
+		Name         *string      `json:"name"`
+		Renderer     *string      `json:"renderer"`
+		Schema       optionalJSON `json:"schema"`
+		Capabilities optionalJSON `json:"capabilities"`
+		Revision     string       `json:"revision"`
 	}
 	if err := decodeUTF8JSON(r, MaxRendererBytes*6+MaxJSONBytes, &in); err != nil {
 		return err
@@ -639,8 +690,8 @@ func (s *Server) updateView(w http.ResponseWriter, r *http.Request, id string) e
 	if doc["stuff_kind"] != "view" {
 		return &StoreError{Status: 404, Reason: "View not found"}
 	}
-	if in.Name == nil && in.Renderer == nil && !in.Schema.Present {
-		return bad("$", "update changes nothing", "provide name, renderer, and/or schema")
+	if in.Name == nil && in.Renderer == nil && !in.Schema.Present && !in.Capabilities.Present {
+		return bad("$", "update changes nothing", "provide name, renderer, schema, and/or capabilities")
 	}
 	if in.Name != nil {
 		n := strings.TrimSpace(*in.Name)
@@ -671,6 +722,17 @@ func (s *Server) updateView(w http.ResponseWriter, r *http.Request, id string) e
 				return err
 			}
 			doc["schema"] = ref
+		}
+	}
+	if in.Capabilities.Present {
+		capabilities, err := normalizeViewCapabilities(in.Capabilities.Value)
+		if err != nil {
+			return err
+		}
+		if len(capabilities) == 0 {
+			delete(doc, "capabilities")
+		} else {
+			doc["capabilities"] = capabilities
 		}
 	}
 	rev, _ := doc["_rev"].(string)
@@ -852,7 +914,7 @@ func (s *Server) describe(w http.ResponseWriter, r *http.Request) error {
 	}
 	out := Document{
 		"items": lenDocs(items), "notes": lenDocs(notes), "sample_limit": MaxPageSize,
-		"envelopes":       Document{"item": []any{"id", "name", "created_at", "updated_at", "revision", "metadata", "view_id"}, "note": []any{"id", "item_id", "created_at", "updated_at", "revision", "text", "metadata", "attachments"}, "view": []any{"id", "name", "created_at", "updated_at", "revision", "renderer", "schema"}},
+		"envelopes":       Document{"item": []any{"id", "name", "created_at", "updated_at", "revision", "metadata", "view_id"}, "note": []any{"id", "item_id", "created_at", "updated_at", "revision", "text", "metadata", "attachments"}, "view": []any{"id", "name", "created_at", "updated_at", "revision", "renderer", "schema", "capabilities"}},
 		"mango":           Document{"version": "CouchDB 3.x Mango", "operators": []any{"$eq", "$ne", "$gt", "$gte", "$lt", "$lte", "$exists", "$type", "$in", "$nin", "$all", "$size", "$elemMatch", "$allMatch", "$and", "$or", "$not", "$nor", "$beginsWith", "$regex", "$mod", "$keyMapMatch", "$text"}},
 		"limits":          Document{"limit_max": MaxPageSize, "selector_bytes_max": MaxQueryBytes, "metadata_bytes_max": MaxJSONBytes, "attachment_bytes_max": MaxAttachmentBytes, "renderer_bytes_max": MaxRendererBytes, "response_bytes_max": MaxResponseBytes},
 		"observed_fields": fields, "indexes": indexes,

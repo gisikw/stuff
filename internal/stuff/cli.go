@@ -211,6 +211,20 @@ func (c *CLI) note(ctx context.Context, args []string, pretty bool) error {
 	}
 }
 
+func parseViewCapabilities(raw string) []any {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]any, 0, len(parts))
+	for _, part := range parts {
+		if value := strings.TrimSpace(part); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
 func (c *CLI) view(ctx context.Context, args []string, pretty bool) error {
 	if len(args) == 0 {
 		return usage("stuff view add|get|update ...")
@@ -219,11 +233,12 @@ func (c *CLI) view(ctx context.Context, args []string, pretty bool) error {
 	case "add":
 		fs := newFlags("view add")
 		schema := fs.String("schema", "", "advisory Schema name")
+		capabilities := fs.String("capabilities", "", "comma-separated explicit View capabilities")
 		if err := fs.Parse(flagsFirst(args[1:])); err != nil {
 			return err
 		}
 		if fs.NArg() != 2 {
-			return usage("stuff view add NAME @RENDERER [--schema SCHEMA]")
+			return usage("stuff view add NAME @RENDERER [--schema SCHEMA] [--capabilities LIST]")
 		}
 		renderer, err := readRendererSource(fs.Arg(1), c.In)
 		if err != nil {
@@ -232,6 +247,9 @@ func (c *CLI) view(ctx context.Context, args []string, pretty bool) error {
 		body := Document{"name": fs.Arg(0), "renderer": renderer}
 		if *schema != "" {
 			body["schema"] = *schema
+		}
+		if values := parseViewCapabilities(*capabilities); len(values) > 0 {
+			body["capabilities"] = values
 		}
 		return c.create(ctx, "/v1/views", body)
 	case "get":
@@ -244,12 +262,14 @@ func (c *CLI) view(ctx context.Context, args []string, pretty bool) error {
 		name := fs.String("name", "", "new name")
 		schema := fs.String("schema", "", "advisory Schema name")
 		clearSchema := fs.Bool("clear-schema", false, "remove the advisory Schema reference")
+		capabilities := fs.String("capabilities", "", "comma-separated explicit View capabilities")
+		clearCapabilities := fs.Bool("clear-capabilities", false, "remove all View capabilities")
 		rev := fs.String("revision", "", "optimistic revision")
 		if err := fs.Parse(flagsFirst(args[1:])); err != nil {
 			return err
 		}
-		if fs.NArg() != 2 || (*schema != "" && *clearSchema) {
-			return usage("stuff view update VIEW @RENDERER [--name NAME] [--schema SCHEMA | --clear-schema] [--revision REV]")
+		if fs.NArg() != 2 || (*schema != "" && *clearSchema) || (*capabilities != "" && *clearCapabilities) {
+			return usage("stuff view update VIEW @RENDERER [--name NAME] [--schema SCHEMA | --clear-schema] [--capabilities LIST | --clear-capabilities] [--revision REV]")
 		}
 		renderer, err := readRendererSource(fs.Arg(1), c.In)
 		if err != nil {
@@ -263,6 +283,11 @@ func (c *CLI) view(ctx context.Context, args []string, pretty bool) error {
 			body["schema"] = *schema
 		} else if *clearSchema {
 			body["schema"] = nil
+		}
+		if values := parseViewCapabilities(*capabilities); len(values) > 0 {
+			body["capabilities"] = values
+		} else if *clearCapabilities {
+			body["capabilities"] = nil
 		}
 		return c.requestJSON(ctx, http.MethodPatch, "/v1/views/"+fs.Arg(0), body, pretty, false)
 	default:
@@ -537,9 +562,9 @@ Usage:
   stuff note add ITEM [TEXT] [--meta JSON|@FILE] [--attach FILE ...]
   stuff note get NOTE
   stuff note find [@QUERY | stdin]
-  stuff view add NAME @RENDERER [--schema SCHEMA]
+  stuff view add NAME @RENDERER [--schema SCHEMA] [--capabilities LIST]
   stuff view get VIEW
-  stuff view update VIEW @RENDERER [--name NAME] [--schema SCHEMA | --clear-schema] [--revision REV]
+  stuff view update VIEW @RENDERER [--name NAME] [--schema SCHEMA | --clear-schema] [--capabilities LIST | --clear-capabilities] [--revision REV]
   stuff config get
   stuff config set-home ITEM [--revision REV]
   stuff config clear-home [--revision REV]

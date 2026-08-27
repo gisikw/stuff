@@ -151,13 +151,14 @@ A Note belongs to exactly one Item. Terms such as `decision`, `attempt`, `report
   "updated_at": "2026-08-27T03:16:00Z",
   "revision": "1-…",
   "renderer": "<!doctype html>…",
-  "schema": "report-html"
+  "schema": "report-html",
+  "capabilities": ["find_items", "find_notes"]
 }
 ```
 
 A View stores a bounded UTF-8 HTML document (`renderer`) as an inert string. The storage API never executes it. Items may reference a View through the optional `view_id` field; the reference is existence- and kind-checked at write time and never changes metadata storage, querying, or validation. The optional `schema` field is an advisory reference to an existing Schema name; it is checked only for existence at write time and is never applied to Item metadata automatically.
 
-When `/read/items/ITEM` encounters a `view_id`, the browser surface runs that renderer inside a doubly sandboxed iframe. The iframe has scripts and inline styles but no same-origin identity, network, forms, workers, child frames, top navigation, or Stuff credential. A first-party host sends one immutable initial snapshot with `postMessage`:
+When `/read/items/ITEM` encounters a `view_id`, the browser surface runs that renderer inside a doubly sandboxed iframe. The iframe has scripts and inline styles but no same-origin identity, network APIs or subresources, forms, workers, child frames, top navigation, or Stuff credential. A first-party host sends one immutable initial snapshot with `postMessage`:
 
 ```json
 {
@@ -169,13 +170,36 @@ When `/read/items/ITEM` encounters a `view_id`, the browser surface runs that re
 }
 ```
 
-The snapshot contains the public Item envelope and a bounded set of linked public Note envelopes. Attachment descriptors are included; attachment bodies and credentials are not. There is no renderer-to-server RPC in this version. `?plain=1` always bypasses the renderer, and stale View references visibly fall back to the generic Item page.
+The snapshot contains the public Item envelope and a bounded set of linked public Note envelopes. Attachment descriptors are included; attachment bodies and credentials are not. `?plain=1` always bypasses the renderer, and stale View references visibly fall back to the generic Item page.
+
+A renderer may request bounded, read-only Mango projections of public Item or Note envelopes through its parent:
+
+```js
+parent.postMessage({
+  type: "stuff:view-query",
+  request_id: "recent-work",
+  resource: "items",
+  query: {selector: {}, limit: 50}
+}, "*");
+
+addEventListener("message", (event) => {
+  if (event.data?.type === "stuff:view-query-result" &&
+      event.data.request_id === "recent-work") {
+    // event.data.ok and event.data.result
+  }
+});
+```
+
+The first-party host accepts messages only from its renderer iframe, permits at most four concurrent requests, limits query JSON to 64 KiB and results to the service maximum of 200 documents, and exposes only Item and Note finds. Query access is denied by default: the View must explicitly carry `find_items` and/or `find_notes` in its top-level `capabilities` field. The host performs the same-origin request; the opaque renderer receives no bearer credential, direct fetch/socket capability, mutation API, attachment body, View source, or ReaderConfig access.
+
+A View renderer is still active code trusted with its snapshot and any explicitly granted query results. Browser sandboxing contains ambient authority; it is not a substitute for reviewing renderer source before attaching it to sensitive Items.
 
 ```bash
-view=$(stuff view add "Migration report" @report.html --schema report-html)
+view=$(stuff view add "Migration report" @report.html --schema report-html \
+  --capabilities find_items,find_notes)
 stuff view get "$view"
 stuff view update "$view" @report-v2.html --name "Migration report v2" --revision 1-…
-stuff view update "$view" @report-v2.html --clear-schema
+stuff view update "$view" @report-v2.html --clear-schema --clear-capabilities
 ```
 
 ### ReaderConfig
@@ -278,9 +302,9 @@ stuff note add ITEM [TEXT] [--meta JSON|@FILE] [--attach FILE ...]
 stuff note get NOTE
 stuff note find [@QUERY | stdin]
 
-stuff view add NAME @RENDERER [--schema SCHEMA]
+stuff view add NAME @RENDERER [--schema SCHEMA] [--capabilities LIST]
 stuff view get VIEW
-stuff view update VIEW @RENDERER [--name NAME] [--schema SCHEMA | --clear-schema] [--revision REV]
+stuff view update VIEW @RENDERER [--name NAME] [--schema SCHEMA | --clear-schema] [--capabilities LIST | --clear-capabilities] [--revision REV]
 
 stuff config get
 stuff config set-home ITEM [--revision REV]

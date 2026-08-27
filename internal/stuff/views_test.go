@@ -193,6 +193,40 @@ func TestViewSchemaReferenceRoundTrip(t *testing.T) {
 	}
 }
 
+func TestViewCapabilitiesAreExplicitValidatedAndClearable(t *testing.T) {
+	store := newMemoryStore()
+	h := NewServer(store, "", nil).Handler()
+	code, created := request(t, h, "POST", "/v1/views", Document{
+		"name": "Projection", "renderer": viewHTML,
+		"capabilities": []any{"find_notes", "find_items", "find_notes"},
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create with capabilities: %d %#v", code, created)
+	}
+	id := created["id"].(string)
+	code, got := request(t, h, "GET", "/v1/views/"+id, nil)
+	capabilities, _ := got["capabilities"].([]any)
+	if code != http.StatusOK || len(capabilities) != 2 || capabilities[0] != "find_items" || capabilities[1] != "find_notes" {
+		t.Fatalf("capabilities not canonical: %d %#v", code, got)
+	}
+
+	code, out := request(t, h, "POST", "/v1/views", Document{"name": "Bad", "renderer": viewHTML, "capabilities": []any{"mutate_items"}})
+	if code != http.StatusBadRequest || !strings.Contains(errReason(out), "unknown View capability") {
+		t.Fatalf("unknown capability accepted: %d %#v", code, out)
+	}
+	code, out = request(t, h, "PATCH", "/v1/views/"+id, Document{"capabilities": "find_items"})
+	if code != http.StatusBadRequest || !strings.Contains(errReason(out), "must be an array") {
+		t.Fatalf("non-array capabilities accepted: %d %#v", code, out)
+	}
+	code, cleared := request(t, h, "PATCH", "/v1/views/"+id, Document{"capabilities": nil, "revision": created["revision"]})
+	if code != http.StatusOK {
+		t.Fatalf("clear capabilities: %d %#v", code, cleared)
+	}
+	if _, present := cleared["capabilities"]; present {
+		t.Fatalf("cleared capabilities still present: %#v", cleared)
+	}
+}
+
 func TestCLIViewCommandsFollowConventions(t *testing.T) {
 	var lastBody Document
 	lastPath, lastMethod := "", ""
@@ -219,7 +253,7 @@ func TestCLIViewCommandsFollowConventions(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	c := &CLI{BaseURL: ts.URL, Client: ts.Client(), In: strings.NewReader(""), Out: &stdout, Err: &stderr}
 
-	if err := c.Run(context.Background(), []string{"view", "add", "Report", "@" + file, "--schema", "report-html"}); err != nil {
+	if err := c.Run(context.Background(), []string{"view", "add", "Report", "@" + file, "--schema", "report-html", "--capabilities", "find_notes,find_items"}); err != nil {
 		t.Fatal(err)
 	}
 	if stdout.String() != "view_test\n" {
@@ -230,6 +264,10 @@ func TestCLIViewCommandsFollowConventions(t *testing.T) {
 	}
 	if lastBody["name"] != "Report" || lastBody["renderer"] != viewHTML || lastBody["schema"] != "report-html" {
 		t.Fatalf("create body: %#v", lastBody)
+	}
+	capabilities, _ := lastBody["capabilities"].([]any)
+	if len(capabilities) != 2 || capabilities[0] != "find_notes" || capabilities[1] != "find_items" {
+		t.Fatalf("create capabilities: %#v", lastBody)
 	}
 
 	stdout.Reset()
@@ -255,11 +293,14 @@ func TestCLIViewCommandsFollowConventions(t *testing.T) {
 	}
 
 	stdout.Reset()
-	if err := c.Run(context.Background(), []string{"view", "update", "view_test", "@" + file, "--clear-schema"}); err != nil {
+	if err := c.Run(context.Background(), []string{"view", "update", "view_test", "@" + file, "--clear-schema", "--clear-capabilities"}); err != nil {
 		t.Fatal(err)
 	}
 	if value, ok := lastBody["schema"]; !ok || value != nil {
 		t.Fatalf("--clear-schema must send null: %#v", lastBody)
+	}
+	if value, ok := lastBody["capabilities"]; !ok || value != nil {
+		t.Fatalf("--clear-capabilities must send null: %#v", lastBody)
 	}
 	if err := c.Run(context.Background(), []string{"view", "update", "view_test", "@" + file, "--schema", "report-html", "--clear-schema"}); err == nil {
 		t.Fatal("combined --schema and --clear-schema accepted")

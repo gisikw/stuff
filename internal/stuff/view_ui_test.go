@@ -13,7 +13,8 @@ func putViewUIFixture(t *testing.T, store *memoryStore, itemID, viewID string, m
 	t.Helper()
 	if _, err := store.Create(t.Context(), viewID, Document{
 		"stuff_kind": "view", "name": "Custom dashboard", "renderer": hostileRenderer,
-		"created_at": "2026-08-27T01:00:00Z", "updated_at": "2026-08-27T01:00:00Z",
+		"capabilities": []any{"find_items", "find_notes"},
+		"created_at":   "2026-08-27T01:00:00Z", "updated_at": "2026-08-27T01:00:00Z",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +53,7 @@ func TestReadViewHostIsFirstPartyShellNotRendererInterpolation(t *testing.T) {
 	if host.Code != http.StatusOK || !strings.Contains(body, `sandbox="allow-scripts"`) || strings.Contains(body, "allow-same-origin") {
 		t.Fatalf("host iframe sandbox: %d %s", host.Code, body)
 	}
-	for _, want := range []string{"/read/items/item_custom/view", "/read/items/item_custom/snapshot", "/read/items/item_custom?plain=1", "/read/view-host.js"} {
+	for _, want := range []string{"/read/items/item_custom/view", "/read/items/item_custom/snapshot", "/read/items/item_custom/query/", "/read/items/item_custom?plain=1", "/read/view-host.js"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("host missing %q: %s", want, body)
 		}
@@ -68,7 +69,7 @@ func TestReadViewHostIsFirstPartyShellNotRendererInterpolation(t *testing.T) {
 	}
 
 	script := htmlRequest(h, http.MethodGet, "/read/view-host.js")
-	if script.Code != http.StatusOK || !strings.Contains(script.Body.String(), "postMessage") || !strings.Contains(script.Body.String(), "credentials: \"same-origin\"") || strings.Contains(script.Body.String(), "secret-token") {
+	if script.Code != http.StatusOK || !strings.Contains(script.Body.String(), "postMessage") || !strings.Contains(script.Body.String(), "event.source !== frame.contentWindow") || !strings.Contains(script.Body.String(), "active >= 4") || !strings.Contains(script.Body.String(), "credentials: \"same-origin\"") || strings.Contains(script.Body.String(), "secret-token") {
 		t.Fatalf("unsafe or missing host script: %d %s", script.Code, script.Body.String())
 	}
 }
@@ -141,6 +142,67 @@ func TestReadViewSnapshotIsPublicBoundedDataNotHTML(t *testing.T) {
 	if metadata["status"] != "opaque" || metadata["view_id"] != malicious {
 		t.Fatalf("metadata was interpreted or changed: %#v", metadata)
 	}
+}
+
+func TestReadViewQueryBridgeIsReadOnlyBoundedAndCredentialless(t *testing.T) {
+	store := newMemoryStore()
+	putViewUIFixture(t, store, "item_custom", "view_custom", Document{"status": "opaque"})
+	putReadFixture(t, store, "item_other", "item", "Other", "", "2026-08-27T02:00:00Z", "2026-08-27T02:00:00Z", "")
+	putReadFixture(t, store, "note_linked", "note", "", "item_other", "2026-08-27T03:00:00Z", "2026-08-27T03:00:00Z", "note")
+	h := NewServer(store, "secret-token", nil).Handler()
+
+	store.mu.Lock()
+	delete(store.docs["view_custom"], "capabilities")
+	store.mu.Unlock()
+	code, denied := request(t, h, http.MethodPost, "/read/items/item_custom/query/items", Document{"selector": Document{}, "limit": 20})
+	if code != http.StatusForbidden || !strings.Contains(errReason(denied), "not allowed") {
+		t.Fatalf("query without explicit capability: %d %#v", code, denied)
+	}
+	store.mu.Lock()
+	store.docs["view_custom"]["capabilities"] = []any{"find_items", "find_notes"}
+	store.mu.Unlock()
+
+	code, items := request(t, h, http.MethodPost, "/read/items/item_custom/query/items", Document{"selector": Document{}, "limit": 20})
+	if code != http.StatusOK {
+		t.Fatalf("credentialless Item query: %d %#v", code, items)
+	}
+	docs, _ := items["docs"].([]any)
+	if len(docs) != 2 || strings.Contains(string(mustJSON(t, items)), "secret-token") {
+		t.Fatalf("Item query data or credential boundary: %#v", items)
+	}
+	for _, raw := range docs {
+		doc, _ := raw.(map[string]any)
+		if doc["stuff_kind"] != nil || doc["_rev"] != nil {
+			t.Fatalf("query leaked internal envelope: %#v", doc)
+		}
+	}
+
+	code, notes := request(t, h, http.MethodPost, "/read/items/item_custom/query/notes", Document{"selector": Document{}, "limit": 20})
+	if code != http.StatusOK {
+		t.Fatalf("credentialless Note query: %d %#v", code, notes)
+	}
+	noteDocs, _ := notes["docs"].([]any)
+	if len(noteDocs) != 1 {
+		t.Fatalf("Note query result: %#v", notes)
+	}
+
+	code, over := request(t, h, http.MethodPost, "/read/items/item_custom/query/items", Document{"selector": Document{}, "limit": MaxPageSize + 1})
+	if code != http.StatusBadRequest || !strings.Contains(errReason(over), "limit") {
+		t.Fatalf("unbounded query accepted: %d %#v", code, over)
+	}
+	code, missing := request(t, h, http.MethodPost, "/read/items/item_other/query/items", Document{"selector": Document{}})
+	if code != http.StatusNotFound {
+		t.Fatalf("non-View Item gained query bridge: %d %#v", code, missing)
+	}
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
 }
 
 func TestReadViewDriftFallsBackAndDirectRoutesFailClosed(t *testing.T) {
