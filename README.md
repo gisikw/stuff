@@ -158,7 +158,7 @@ A Note belongs to exactly one Item. Terms such as `decision`, `attempt`, `report
 
 A View stores a bounded UTF-8 HTML document (`renderer`) as an inert string. The storage API never executes it. Items may reference a View through the optional `view_id` field; the reference is existence- and kind-checked at write time and never changes metadata storage, querying, or validation. The optional `schema` field is an advisory reference to an existing Schema name; it is checked only for existence at write time and is never applied to Item metadata automatically.
 
-When `/read/items/ITEM` encounters a `view_id`, the browser surface runs that renderer inside a doubly sandboxed iframe. The iframe has scripts and inline styles but no same-origin identity, network APIs or subresources, forms, workers, child frames, top navigation, or Stuff credential. A first-party host sends one immutable initial snapshot with `postMessage`:
+When `/read/items/ITEM` encounters a `view_id`, the browser surface runs that renderer inside a doubly sandboxed iframe. The iframe has scripts and inline styles but no same-origin identity, network APIs or subresources, forms, workers, child frames, script-initiated top navigation, or Stuff credential. Links may navigate the top-level reader only from a real user activation (`target="_top"`). A first-party host sends one immutable initial snapshot with `postMessage`:
 
 ```json
 {

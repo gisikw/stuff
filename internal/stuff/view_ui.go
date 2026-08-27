@@ -14,7 +14,7 @@ var readViewHostTemplate = template.Must(template.New("view-host").Parse(`<!doct
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.ItemName}} · Stuff</title><style>
 :root{color-scheme:light;--ink:#25231f;--muted:#716d64;--line:#dedbd3;--paper:#faf9f6;--accent:#385d54}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.45 ui-sans-serif,system-ui,-apple-system,sans-serif}.bar{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.65rem 1rem;border-bottom:1px solid var(--line);background:#fff}.bar a{color:var(--accent)}.title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.subtle{color:var(--muted);font-size:.85rem}iframe{display:block;width:100%;height:calc(100vh - 3.25rem);border:0;background:#fff}@media(max-width:520px){.bar{align-items:flex-start;flex-direction:column;gap:.25rem}iframe{height:calc(100vh - 4.75rem)}}
-</style></head><body><header class="bar"><div class="title"><strong>{{.ItemName}}</strong> <span class="subtle">· {{.ViewName}}</span></div><a href="{{.PlainPath}}">Safe generic view</a></header><iframe id="stuff-view" title="{{.ViewName}}" sandbox="allow-scripts" data-frame="{{.FramePath}}" data-snapshot="{{.SnapshotPath}}" data-query="{{.QueryPath}}"></iframe><script src="/read/view-host.js" defer></script></body></html>`))
+</style></head><body><header class="bar"><div class="title"><strong>{{.ItemName}}</strong> <span class="subtle">· {{.ViewName}}</span></div><a href="{{.PlainPath}}">Safe generic view</a></header><iframe id="stuff-view" title="{{.ViewName}}" sandbox="allow-scripts allow-top-navigation-by-user-activation" data-frame="{{.FramePath}}" data-snapshot="{{.SnapshotPath}}" data-query="{{.QueryPath}}"></iframe><script src="/read/view-host.js" defer></script></body></html>`))
 
 type readViewHostData struct {
 	ItemName, ViewName, PlainPath, FramePath, SnapshotPath, QueryPath string
@@ -190,7 +190,7 @@ func (s *Server) serveReadViewDocument(w http.ResponseWriter, r *http.Request, i
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'; navigate-to 'none'; frame-ancestors 'self'")
+	w.Header().Set("Content-Security-Policy", "sandbox allow-scripts allow-top-navigation-by-user-activation; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'")
 	w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 	w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
 	w.Header().Set("Referrer-Policy", "no-referrer")

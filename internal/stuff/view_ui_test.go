@@ -50,7 +50,7 @@ func TestReadViewHostIsFirstPartyShellNotRendererInterpolation(t *testing.T) {
 
 	host := htmlRequest(h, http.MethodGet, "/read/items/item_custom")
 	body := host.Body.String()
-	if host.Code != http.StatusOK || !strings.Contains(body, `sandbox="allow-scripts"`) || strings.Contains(body, "allow-same-origin") {
+	if host.Code != http.StatusOK || !strings.Contains(body, `sandbox="allow-scripts allow-top-navigation-by-user-activation"`) || strings.Contains(body, "allow-same-origin") {
 		t.Fatalf("host iframe sandbox: %d %s", host.Code, body)
 	}
 	for _, want := range []string{"/read/items/item_custom/view", "/read/items/item_custom/snapshot", "/read/items/item_custom/query/", "/read/items/item_custom?plain=1", "/read/view-host.js"} {
@@ -86,14 +86,14 @@ func TestReadViewDocumentHasHostileSandbox(t *testing.T) {
 	csp := frame.Header().Get("Content-Security-Policy")
 	for _, want := range []string{
 		"sandbox allow-scripts", "default-src 'none'", "script-src 'unsafe-inline'", "style-src 'unsafe-inline'",
-		"connect-src 'none'", "object-src 'none'", "frame-src 'none'", "worker-src 'none'", "base-uri 'none'", "form-action 'none'", "navigate-to 'none'",
+		"connect-src 'none'", "object-src 'none'", "frame-src 'none'", "worker-src 'none'", "base-uri 'none'", "form-action 'none'", "allow-top-navigation-by-user-activation",
 	} {
 		if !strings.Contains(csp, want) {
 			t.Fatalf("renderer CSP missing %q: %s", want, csp)
 		}
 	}
-	if strings.Contains(csp, "allow-same-origin") || strings.Contains(csp, "allow-top-navigation") {
-		t.Fatalf("renderer gained origin or navigation authority: %s", csp)
+	if strings.Contains(csp, "allow-same-origin") || strings.Contains(csp, "sandbox allow-scripts allow-top-navigation;") || strings.Contains(csp, "navigate-to") {
+		t.Fatalf("renderer gained ambient origin/navigation authority or retained unsupported CSP: %s", csp)
 	}
 	if frame.Header().Get("Referrer-Policy") != "no-referrer" || frame.Header().Get("X-Content-Type-Options") != "nosniff" || strings.Contains(frame.Body.String(), "secret-token") {
 		t.Fatalf("renderer security headers or credential boundary failed: %#v", frame.Header())

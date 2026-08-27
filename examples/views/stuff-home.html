@@ -10,9 +10,9 @@
 </head>
 <body>
 <main>
-<header><div><div class="eyebrow">Durable Items and Notes</div><h1 id="title">Stuff</h1><div id="subtitle" class="muted">A userland projection</div></div><nav id="links" class="links"><a href="/read">Reverse cron</a></nav></header>
+<header><div><div class="eyebrow">Durable Items and Notes</div><h1 id="title">Stuff</h1><div id="subtitle" class="muted">A userland projection</div></div><nav id="links" class="links"><a href="/read" target="_top">Reverse cron</a></nav></header>
 <div id="warning" class="warning hidden"></div>
-<section class="section"><div class="section-head"><h2>Recently active</h2><a class="all" href="/read">All activity</a></div><div id="activity" class="activity"><div class="empty">Loading…</div></div></section>
+<section class="section"><div class="section-head"><h2>Recently active</h2><a class="all" href="/read" target="_top">All activity</a></div><div id="activity" class="activity"><div class="empty">Loading…</div></div></section>
 <section class="section"><div class="section-head"><h2>Work convention</h2><span class="muted">metadata.status · advisory</span></div><div id="board" class="board"></div></section>
 </main>
 <script>
@@ -33,7 +33,7 @@
     return new Intl.RelativeTimeFormat(undefined, {numeric:"auto"}).format(Math.round(seconds / divisor), unit);
   };
   const itemPath = (id) => `/read/items/${encodeURIComponent(id)}`;
-  const itemCard = (item, activityAt, noteCount) => `<a href="${itemPath(item.id)}"><div class="name">${escapeHTML(item.name)}</div><div class="stamp" title="${escapeHTML(activityAt)}">${escapeHTML(time(activityAt))} · ${noteCount} ${noteCount === 1 ? "Note" : "Notes"}</div><div class="short" title="${escapeHTML(item.id)}">${escapeHTML(shortID(item.id))}</div></a>`;
+  const itemCard = (item, activityAt, noteCount) => `<a href="${itemPath(item.id)}" target="_top"><div class="name">${escapeHTML(item.name)}</div><div class="stamp" title="${escapeHTML(activityAt)}">${escapeHTML(time(activityAt))} · ${noteCount} ${noteCount === 1 ? "Note" : "Notes"}</div><div class="short" title="${escapeHTML(item.id)}">${escapeHTML(shortID(item.id))}</div></a>`;
   const configure = () => {
     const metadata = state.snapshot?.item?.metadata;
     if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return;
@@ -43,7 +43,7 @@
       const nav = document.getElementById("links");
       for (const bookmark of metadata.bookmarks) {
         if (!bookmark || typeof bookmark.label !== "string" || typeof bookmark.href !== "string" || !bookmark.href.startsWith("/")) continue;
-        const link = document.createElement("a"); link.textContent = bookmark.label; link.href = bookmark.href; nav.append(link);
+        const link = document.createElement("a"); link.textContent = bookmark.label; link.href = bookmark.href; link.target = "_top"; nav.append(link);
       }
     }
   };
