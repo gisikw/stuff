@@ -97,6 +97,44 @@ func TestReadPaginationAndDetailMarkdownSafety(t *testing.T) {
 	}
 }
 
+func TestReadGenericPolishIsMetadataAgnostic(t *testing.T) {
+	store := newMemoryStore()
+	itemID := "item_abcdefghijklmnopqrstuvwxyz"
+	putReadFixture(t, store, itemID, "item", "Polished", "", "2026-08-27T01:00:00Z", "2026-08-27T01:00:00Z", "")
+	putReadFixture(t, store, "note_abcdefghijklmnop", "note", "", itemID, "2026-08-27T02:00:00Z", "2026-08-27T02:00:00Z", "one")
+	putReadFixture(t, store, "note_bcdefghijklmnopq", "note", "", itemID, "2026-08-27T03:00:00Z", "2026-08-27T03:00:00Z", "two")
+	h := NewServer(store, "", nil).Handler()
+
+	index := htmlRequest(h, http.MethodGet, "/read")
+	body := index.Body.String()
+	for _, want := range []string{">item_abcdefgh<", "2 Notes", `time data-time datetime="2026-08-27T03:00:00Z"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("activity polish missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, ">"+itemID+"<") {
+		t.Fatalf("full Item ID remained visually expanded: %s", body)
+	}
+
+	detail := htmlRequest(h, http.MethodGet, "/read/items/"+itemID)
+	body = detail.Body.String()
+	for _, want := range []string{`data-copy-id="` + itemID + `"`, ">item_abcdefgh<", `id="notes-order"`, `id="notes-list" data-order="oldest"`, "Notes <span class=\"subtle\">(2)</span>", "/read/activity.js"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("detail polish missing %q: %s", want, body)
+		}
+	}
+
+	script := htmlRequest(h, http.MethodGet, "/read/activity.js")
+	for _, want := range []string{"Intl.RelativeTimeFormat", "stuff.read.notesNewestFirst", "navigator.clipboard.writeText"} {
+		if !strings.Contains(script.Body.String(), want) {
+			t.Fatalf("read helper missing %q: %s", want, script.Body.String())
+		}
+	}
+	if got := shortID("short"); got != "short" {
+		t.Fatalf("short ID changed: %q", got)
+	}
+}
+
 func TestReadAttachmentUsesSafeDownloadAndUnknownItemIs404(t *testing.T) {
 	store := newMemoryStore()
 	putReadFixture(t, store, "item_x", "item", "Artifacts", "", "2026-08-27T01:00:00Z", "2026-08-27T01:00:00Z", "")

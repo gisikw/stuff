@@ -21,7 +21,8 @@ const readPageSize = 20
 var readTemplates = template.Must(template.New("read").Parse(readTemplateText))
 
 type readItem struct {
-	ID, Name, CreatedAt, UpdatedAt, ActivityAt, ActivitySource, Path, Metadata string
+	ID, ShortID, Name, CreatedAt, UpdatedAt, ActivityAt, ActivitySource, Path, Metadata string
+	NoteCount                                                                           int
 }
 
 type readAttachment struct {
@@ -31,9 +32,9 @@ type readAttachment struct {
 }
 
 type readNote struct {
-	ID, CreatedAt, UpdatedAt, Metadata string
-	Body                               template.HTML
-	Attachments                        []readAttachment
+	ID, ShortID, CreatedAt, UpdatedAt, Metadata string
+	Body                                        template.HTML
+	Attachments                                 []readAttachment
 }
 
 type readIndexData struct {
@@ -154,6 +155,7 @@ func (s *Server) serveReadIndex(w http.ResponseWriter, r *http.Request) {
 		if item == nil {
 			continue
 		}
+		item.NoteCount++
 		candidate := newestTimestamp(stringValue(note["updated_at"]), stringValue(note["created_at"]))
 		if timestampAfter(candidate, item.ActivityAt) {
 			item.ActivityAt = candidate
@@ -223,7 +225,7 @@ func (s *Server) serveReadItem(w http.ResponseWriter, r *http.Request, id string
 			continue
 		}
 		rn := readNote{
-			ID: stringValue(note["id"]), CreatedAt: stringValue(note["created_at"]),
+			ID: stringValue(note["id"]), ShortID: shortID(stringValue(note["id"])), CreatedAt: stringValue(note["created_at"]),
 			UpdatedAt: stringValue(note["updated_at"]), Metadata: prettyJSON(note["metadata"]),
 			Body: renderConservativeMarkdown(stringValue(note["text"])),
 		}
@@ -300,13 +302,22 @@ func (s *Server) readDocuments(r *http.Request, kind string, query Document) ([]
 
 func documentReadItem(doc Document) readItem {
 	updated := stringValue(doc["updated_at"])
+	id := stringValue(doc["id"])
 	return readItem{
-		ID: stringValue(doc["id"]), Name: stringValue(doc["name"]),
+		ID: id, ShortID: shortID(id), Name: stringValue(doc["name"]),
 		CreatedAt: stringValue(doc["created_at"]), UpdatedAt: updated,
 		ActivityAt:     newestTimestamp(updated, stringValue(doc["created_at"])),
 		ActivitySource: "item activity", Metadata: prettyJSON(doc["metadata"]),
 		Path: "/read/items/" + url.PathEscape(stringValue(doc["id"])),
 	}
+}
+
+func shortID(id string) string {
+	prefixEnd := strings.IndexByte(id, '_')
+	if prefixEnd < 0 || len(id)-prefixEnd-1 <= 8 {
+		return id
+	}
+	return id[:prefixEnd+1] + id[prefixEnd+1:prefixEnd+9]
 }
 
 func readPage(r *http.Request) (int, error) {
@@ -466,6 +477,50 @@ func readHTTPError(w http.ResponseWriter, status int, message string) {
 }
 
 const readActivityScript = `(() => {
+  const relative = new Intl.RelativeTimeFormat(undefined, {numeric: "auto"});
+  const now = Date.now();
+  for (const element of document.querySelectorAll("time[data-time]")) {
+    const timestamp = Date.parse(element.dateTime);
+    if (!Number.isFinite(timestamp)) continue;
+    const seconds = (timestamp - now) / 1000;
+    let divisor = 1, unit = "second";
+    if (Math.abs(seconds) >= 86400) { divisor = 86400; unit = "day"; }
+    else if (Math.abs(seconds) >= 3600) { divisor = 3600; unit = "hour"; }
+    else if (Math.abs(seconds) >= 60) { divisor = 60; unit = "minute"; }
+    element.title = element.dateTime;
+    element.textContent = relative.format(Math.round(seconds / divisor), unit);
+  }
+
+  for (const button of document.querySelectorAll("[data-copy-id]")) {
+    button.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(button.dataset.copyId);
+        const previous = button.textContent;
+        button.textContent = "Copied";
+        setTimeout(() => { button.textContent = previous; }, 900);
+      } catch (_) {}
+    });
+  }
+
+  const noteList = document.getElementById("notes-list");
+  const orderButton = document.getElementById("notes-order");
+  if (noteList && orderButton) {
+    let newestFirst = false;
+    try { newestFirst = localStorage.getItem("stuff.read.notesNewestFirst") === "true"; } catch (_) {}
+    const applyOrder = (next) => {
+      if (next !== (noteList.dataset.order === "newest")) {
+        for (const note of Array.from(noteList.children).reverse()) noteList.append(note);
+      }
+      noteList.dataset.order = next ? "newest" : "oldest";
+      orderButton.textContent = next ? "Oldest first" : "Newest first";
+      orderButton.setAttribute("aria-pressed", String(next));
+      newestFirst = next;
+      try { localStorage.setItem("stuff.read.notesNewestFirst", String(next)); } catch (_) {}
+    };
+    applyOrder(newestFirst);
+    orderButton.addEventListener("click", () => applyOrder(!newestFirst));
+  }
+
   try {
     const key = "stuff.read.lastSeen";
     const previous = localStorage.getItem(key);
@@ -495,8 +550,8 @@ const readActivityScript = `(() => {
 
 const readTemplateText = `
 {{define "head"}}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Stuff</title><style>
-:root{color-scheme:light;--ink:#25231f;--muted:#716d64;--line:#dedbd3;--paper:#faf9f6;--card:#fff;--accent:#385d54}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}main{width:min(880px,calc(100% - 2rem));margin:3rem auto 6rem}header{margin-bottom:2rem}h1,h2,h3{line-height:1.2}h1{font-size:2rem;margin:.2rem 0}a{color:var(--accent)}.subtle,.stamp{color:var(--muted);font-size:.9rem}.card,.note{display:block;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1rem 1.15rem;margin:.8rem 0;text-decoration:none;color:inherit}.card:hover{border-color:var(--accent)}.card h2,.note h2{font-size:1.12rem;margin:0 0 .35rem}.warning{border-left:4px solid #b58134;background:#fff7e9;padding:.7rem 1rem}.pager{display:flex;justify-content:space-between;margin-top:1.5rem}.meta{white-space:pre-wrap;overflow-wrap:anywhere;background:#f1f0eb;padding:.8rem;border-radius:6px;font:13px/1.45 ui-monospace,monospace}.markdown pre{overflow:auto;background:#f1f0eb;padding:.8rem;border-radius:6px}.markdown code{font-family:ui-monospace,monospace}.markdown h1{font-size:1.35rem}.markdown h2{font-size:1.2rem}.markdown h3{font-size:1.08rem}.attachments{padding-left:1.2rem}.back{display:inline-block;margin-bottom:1rem}.seen-divider{display:flex;align-items:center;gap:.7rem;color:var(--muted);font-size:.82rem;margin:1.4rem 0}.seen-divider:before,.seen-divider:after{content:"";height:1px;background:var(--line);flex:1}@media(max-width:520px){main{margin-top:1.5rem}.stamp{display:block}}</style></head><body><main>{{end}}
+:root{color-scheme:light;--ink:#25231f;--muted:#716d64;--line:#dedbd3;--paper:#faf9f6;--card:#fff;--accent:#385d54}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}main{width:min(880px,calc(100% - 2rem));margin:3rem auto 6rem}header{margin-bottom:2rem}h1,h2,h3{line-height:1.2}h1{font-size:2rem;margin:.2rem 0}a{color:var(--accent)}.subtle,.stamp{color:var(--muted);font-size:.9rem}.card,.note{display:block;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1rem 1.15rem;margin:.8rem 0;text-decoration:none;color:inherit}.card:hover{border-color:var(--accent)}.card h2,.note h2{font-size:1.12rem;margin:0 0 .35rem}.warning{border-left:4px solid #b58134;background:#fff7e9;padding:.7rem 1rem}.pager{display:flex;justify-content:space-between;margin-top:1.5rem}.meta{white-space:pre-wrap;overflow-wrap:anywhere;background:#f1f0eb;padding:.8rem;border-radius:6px;font:13px/1.45 ui-monospace,monospace}.markdown pre{overflow:auto;background:#f1f0eb;padding:.8rem;border-radius:6px}.markdown code{font-family:ui-monospace,monospace}.markdown h1{font-size:1.35rem}.markdown h2{font-size:1.2rem}.markdown h3{font-size:1.08rem}.attachments{padding-left:1.2rem}.back{display:inline-block;margin-bottom:1rem}.id-button,.order-button{appearance:none;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--accent);padding:.2rem .45rem;font:inherit;cursor:pointer}.id-button{font:13px/1.35 ui-monospace,monospace}.notes-head{display:flex;align-items:center;justify-content:space-between;gap:1rem}.notes-head h2{margin-bottom:.4rem}.seen-divider{display:flex;align-items:center;gap:.7rem;color:var(--muted);font-size:.82rem;margin:1.4rem 0}.seen-divider:before,.seen-divider:after{content:"";height:1px;background:var(--line);flex:1}@media(max-width:520px){main{margin-top:1.5rem}.stamp{display:block}}</style></head><body><main>{{end}}
 {{define "foot"}}</main></body></html>{{end}}
-{{define "index"}}{{template "head" .}}<header><div class="subtle">Durable Items and Notes</div><h1>Stuff</h1><div class="subtle">Recently active · page {{.Page}} of {{.Pages}}</div></header>{{if .Truncated}}<p class="warning">This view is bounded to a sample of 200 Items and 200 Notes; activity outside that sample may be omitted.</p>{{end}}{{if .Items}}{{range .Items}}<a class="card" data-activity="{{.ActivityAt}}" href="{{.Path}}"><h2>{{.Name}}</h2><div class="stamp">{{.ActivityAt}} · {{.ActivitySource}}</div><div class="subtle">{{.ID}}</div></a>{{end}}{{else}}<p>No Items yet.</p>{{end}}<nav class="pager"><span>{{if .HasPrevious}}<a href="/read?page={{.Previous}}">← Newer</a>{{end}}</span><span>{{if .HasNext}}<a href="/read?page={{.Next}}">Older →</a>{{end}}</span></nav><script src="/read/activity.js" defer></script>{{template "foot" .}}{{end}}
-{{define "detail"}}{{template "head" .}}<a class="back" href="/read">← All Items</a>{{if .Warning}}<p class="warning">{{.Warning}}</p>{{end}}<header><h1>{{.Item.Name}}</h1><div class="subtle">{{.Item.ID}}</div><div class="stamp">Created {{.Item.CreatedAt}} · Item updated {{.Item.UpdatedAt}}</div></header><h2>Metadata</h2><pre class="meta">{{.Item.Metadata}}</pre><h2>Notes</h2>{{if .Truncated}}<p class="warning">Only the first 200 matching Notes are shown.</p>{{end}}{{if .Notes}}{{range .Notes}}<article class="note"><h2>{{.CreatedAt}}</h2><div class="subtle">{{.ID}}</div>{{if .Body}}<div class="markdown">{{.Body}}</div>{{end}}<details><summary>Metadata</summary><pre class="meta">{{.Metadata}}</pre></details>{{if .Attachments}}<h3>Attachments</h3><ul class="attachments">{{range .Attachments}}<li>{{if .CanView}}<a href="{{.ViewPath}}">View {{.Name}}</a> · {{end}}<a href="{{.Path}}">Download</a> <span class="subtle">{{.MediaType}} · {{.Bytes}} bytes</span></li>{{end}}</ul>{{end}}</article>{{end}}{{else}}<p>No Notes yet.</p>{{end}}{{template "foot" .}}{{end}}
+{{define "index"}}{{template "head" .}}<header><div class="subtle">Durable Items and Notes</div><h1>Stuff</h1><div class="subtle">Recently active · page {{.Page}} of {{.Pages}}</div></header>{{if .Truncated}}<p class="warning">This view is bounded to a sample of 200 Items and 200 Notes; activity outside that sample may be omitted.</p>{{end}}{{if .Items}}{{range .Items}}<a class="card" data-activity="{{.ActivityAt}}" href="{{.Path}}"><h2>{{.Name}}</h2><div class="stamp"><time data-time datetime="{{.ActivityAt}}">{{.ActivityAt}}</time> · {{.ActivitySource}} · {{.NoteCount}} {{if eq .NoteCount 1}}Note{{else}}Notes{{end}}</div><div class="subtle" title="{{.ID}}">{{.ShortID}}</div></a>{{end}}{{else}}<p>No Items yet.</p>{{end}}<nav class="pager"><span>{{if .HasPrevious}}<a href="/read?page={{.Previous}}">← Newer</a>{{end}}</span><span>{{if .HasNext}}<a href="/read?page={{.Next}}">Older →</a>{{end}}</span></nav><script src="/read/activity.js" defer></script>{{template "foot" .}}{{end}}
+{{define "detail"}}{{template "head" .}}<a class="back" href="/read">← All Items</a>{{if .Warning}}<p class="warning">{{.Warning}}</p>{{end}}<header><h1>{{.Item.Name}}</h1><button class="id-button" type="button" data-copy-id="{{.Item.ID}}" title="Copy {{.Item.ID}}">{{.Item.ShortID}}</button><div class="stamp">Created <time data-time datetime="{{.Item.CreatedAt}}">{{.Item.CreatedAt}}</time> · Item updated <time data-time datetime="{{.Item.UpdatedAt}}">{{.Item.UpdatedAt}}</time></div></header><h2>Metadata</h2><pre class="meta">{{.Item.Metadata}}</pre><div class="notes-head"><h2>Notes <span class="subtle">({{len .Notes}})</span></h2>{{if .Notes}}<button id="notes-order" class="order-button" type="button" aria-pressed="false">Newest first</button>{{end}}</div>{{if .Truncated}}<p class="warning">Only the first 200 matching Notes are shown.</p>{{end}}{{if .Notes}}<div id="notes-list" data-order="oldest">{{range .Notes}}<article class="note"><h2><time data-time datetime="{{.CreatedAt}}">{{.CreatedAt}}</time></h2><button class="id-button" type="button" data-copy-id="{{.ID}}" title="Copy {{.ID}}">{{.ShortID}}</button>{{if .Body}}<div class="markdown">{{.Body}}</div>{{end}}<details><summary>Metadata</summary><pre class="meta">{{.Metadata}}</pre></details>{{if .Attachments}}<h3>Attachments</h3><ul class="attachments">{{range .Attachments}}<li>{{if .CanView}}<a href="{{.ViewPath}}">View {{.Name}}</a> · {{end}}<a href="{{.Path}}">Download</a> <span class="subtle">{{.MediaType}} · {{.Bytes}} bytes</span></li>{{end}}</ul>{{end}}</article>{{end}}</div>{{else}}<p>No Notes yet.</p>{{end}}<script src="/read/activity.js" defer></script>{{template "foot" .}}{{end}}
 `
