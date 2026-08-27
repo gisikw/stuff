@@ -120,6 +120,11 @@ func TestReadAttachmentUsesSafeDownloadAndUnknownItemIs404(t *testing.T) {
 	if string(body) != "<script>never inline</script>" {
 		t.Fatalf("attachment body changed: %q", body)
 	}
+	view := htmlRequest(h, http.MethodGet, "/read/notes/note_x/attachments/report.html/view")
+	viewCSP := view.Header().Get("Content-Security-Policy")
+	if view.Code != http.StatusOK || !strings.Contains(view.Header().Get("Content-Disposition"), "inline") || !strings.Contains(viewCSP, "sandbox") || !strings.Contains(viewCSP, "default-src 'none'") {
+		t.Fatalf("HTML view is not isolated: %d %#v", view.Code, view.Header())
+	}
 
 	missing := htmlRequest(h, http.MethodGet, "/read/items/item_missing")
 	if missing.Code != http.StatusNotFound {

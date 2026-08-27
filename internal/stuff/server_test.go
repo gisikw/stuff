@@ -85,11 +85,23 @@ func (m *memoryStore) Indexes(context.Context) (Document, error) {
 	return Document{"indexes": []any{}}, nil
 }
 func (m *memoryStore) Attachment(_ context.Context, id, name string) (io.ReadCloser, http.Header, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	b, ok := m.attachments[id+"/"+name]
 	if !ok {
 		return nil, nil, &StoreError{Status: 404, Reason: "missing attachment"}
 	}
-	h := http.Header{"Content-Type": []string{"application/octet-stream"}}
+	mediaType := "application/octet-stream"
+	if doc := m.docs[id]; doc != nil {
+		if attachments, ok := doc["_attachments"].(map[string]any); ok {
+			if attachment, ok := attachments[name].(map[string]any); ok {
+				if value, ok := attachment["content_type"].(string); ok {
+					mediaType = value
+				}
+			}
+		}
+	}
+	h := http.Header{"Content-Type": []string{mediaType}, "Content-Length": []string{fmt.Sprint(len(b))}}
 	return io.NopCloser(bytes.NewReader(b)), h, nil
 }
 

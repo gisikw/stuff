@@ -93,7 +93,7 @@ Create commands print only the new ID, making shell composition reliable.
 - `/read` lists Items by effective activity, including activity from linked Notes.
 - `/read/items/<item-id>` shows an Item, its metadata, Notes, and attachment downloads.
 
-The activity view deliberately reads a bounded sample of at most 200 Items and 200 Notes, then paginates that sample locally. It displays a warning when either bound is reached. Note text uses a conservative Markdown renderer that treats stored HTML as inert text. Attachments retain forced-download disposition, a sandboxing content security policy, and `nosniff`; active HTML is never rendered in the application origin.
+The activity view deliberately reads a bounded sample of at most 200 Items and 200 Notes, then paginates that sample locally. It displays a warning when either bound is reached. Note text uses a conservative Markdown renderer that treats stored HTML as inert text. Attachments retain a forced-download path. HTML attachments also have an explicit full-page view whose response is forced into an opaque CSP sandbox: scripts and external resources are disabled, inline styles and data images/fonts are allowed, and `nosniff` remains enabled.
 
 The `/read` routes are unauthenticated at the application layer so deployments can put them behind an identity-aware reverse proxy without exposing the API bearer token to a browser. Deployments **must** bind Stuff to a trusted interface or identity-gate these routes at the proxy. All `/v1` data and mutation routes remain protected by `STUFF_TOKEN` when configured.
 
@@ -147,7 +147,7 @@ stuff note add "$item" "Migration report" \
   --attach timings.csv
 ```
 
-Ordinary Note retrieval and queries return attachment descriptors, never inline bodies. Attachment downloads use a restrictive content security policy, `nosniff`, and attachment disposition. Deployments that intentionally render active HTML should use a separate document origin.
+Ordinary Note retrieval and queries return attachment descriptors, never inline bodies. Attachment downloads use a restrictive content security policy, `nosniff`, and attachment disposition. The browser read surface may display HTML attachments only through its CSP-sandboxed, scriptless full-page view. Deployments that need active HTML should still use a separate document origin.
 
 ## Advisory Schemas
 

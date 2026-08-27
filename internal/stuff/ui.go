@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"html"
 	"html/template"
+	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"sort"
@@ -23,8 +25,9 @@ type readItem struct {
 }
 
 type readAttachment struct {
-	Name, MediaType, Path string
-	Bytes                 any
+	Name, MediaType, Path, ViewPath string
+	Bytes                           any
+	CanView                         bool
 }
 
 type readNote struct {
@@ -70,7 +73,7 @@ func (s *Server) serveReadRoute(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	case strings.HasPrefix(r.URL.Path, "/read/notes/"):
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/read/notes/"), "/")
-		if len(parts) != 3 || parts[1] != "attachments" {
+		if (len(parts) != 3 && len(parts) != 4) || parts[1] != "attachments" || (len(parts) == 4 && parts[3] != "view") {
 			readHTTPError(w, http.StatusNotFound, "Attachment not found")
 			return true
 		}
@@ -80,7 +83,13 @@ func (s *Server) serveReadRoute(w http.ResponseWriter, r *http.Request) bool {
 			readHTTPError(w, http.StatusNotFound, "Attachment not found")
 			return true
 		}
-		if err := s.attachment(w, r, id, name); err != nil {
+		var err error
+		if len(parts) == 4 {
+			err = s.viewHTMLAttachment(w, r, id, name)
+		} else {
+			err = s.attachment(w, r, id, name)
+		}
+		if err != nil {
 			s.readError(w, err)
 		}
 		return true
@@ -191,9 +200,12 @@ func (s *Server) serveReadItem(w http.ResponseWriter, r *http.Request, id string
 			for _, value := range raw {
 				a, _ := value.(map[string]any)
 				name := stringValue(a["name"])
+				mediaType := stringValue(a["media_type"])
+				path := "/read/notes/" + url.PathEscape(rn.ID) + "/attachments/" + url.PathEscape(name)
 				rn.Attachments = append(rn.Attachments, readAttachment{
-					Name: name, MediaType: stringValue(a["media_type"]), Bytes: a["bytes"],
-					Path: "/read/notes/" + url.PathEscape(rn.ID) + "/attachments/" + url.PathEscape(name),
+					Name: name, MediaType: mediaType, Bytes: a["bytes"], Path: path,
+					CanView:  strings.EqualFold(strings.TrimSpace(strings.Split(mediaType, ";")[0]), "text/html"),
+					ViewPath: path + "/view",
 				})
 			}
 		}
@@ -206,6 +218,35 @@ func (s *Server) serveReadItem(w http.ResponseWriter, r *http.Request, id string
 		return notes[i].ID < notes[j].ID
 	})
 	s.renderRead(w, "detail", readDetailData{Item: item, Notes: notes, Truncated: full})
+}
+
+func (s *Server) viewHTMLAttachment(w http.ResponseWriter, r *http.Request, id, name string) error {
+	doc, err := s.store.Get(r.Context(), id)
+	if err != nil {
+		return err
+	}
+	if doc["stuff_kind"] != "note" {
+		return &StoreError{Status: http.StatusNotFound, Reason: "Note not found"}
+	}
+	body, headers, err := s.store.Attachment(r.Context(), id, name)
+	if err != nil {
+		return err
+	}
+	defer body.Close()
+	mediaType, _, _ := mime.ParseMediaType(headers.Get("Content-Type"))
+	if !strings.EqualFold(mediaType, "text/html") {
+		return &StoreError{Status: http.StatusNotFound, Reason: "HTML attachment not found"}
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Length", headers.Get("Content-Length"))
+	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'")
+	w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": name}))
+	w.WriteHeader(http.StatusOK)
+	_, err = io.Copy(w, body)
+	return err
 }
 
 func (s *Server) readDocuments(r *http.Request, kind string, query Document) ([]Document, bool, error) {
@@ -422,5 +463,5 @@ const readTemplateText = `
 :root{color-scheme:light;--ink:#25231f;--muted:#716d64;--line:#dedbd3;--paper:#faf9f6;--card:#fff;--accent:#385d54}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}main{width:min(880px,calc(100% - 2rem));margin:3rem auto 6rem}header{margin-bottom:2rem}h1,h2,h3{line-height:1.2}h1{font-size:2rem;margin:.2rem 0}a{color:var(--accent)}.subtle,.stamp{color:var(--muted);font-size:.9rem}.card,.note{display:block;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1rem 1.15rem;margin:.8rem 0;text-decoration:none;color:inherit}.card:hover{border-color:var(--accent)}.card h2,.note h2{font-size:1.12rem;margin:0 0 .35rem}.warning{border-left:4px solid #b58134;background:#fff7e9;padding:.7rem 1rem}.pager{display:flex;justify-content:space-between;margin-top:1.5rem}.meta{white-space:pre-wrap;overflow-wrap:anywhere;background:#f1f0eb;padding:.8rem;border-radius:6px;font:13px/1.45 ui-monospace,monospace}.markdown pre{overflow:auto;background:#f1f0eb;padding:.8rem;border-radius:6px}.markdown code{font-family:ui-monospace,monospace}.markdown h1{font-size:1.35rem}.markdown h2{font-size:1.2rem}.markdown h3{font-size:1.08rem}.attachments{padding-left:1.2rem}.back{display:inline-block;margin-bottom:1rem}.seen-divider{display:flex;align-items:center;gap:.7rem;color:var(--muted);font-size:.82rem;margin:1.4rem 0}.seen-divider:before,.seen-divider:after{content:"";height:1px;background:var(--line);flex:1}@media(max-width:520px){main{margin-top:1.5rem}.stamp{display:block}}</style></head><body><main>{{end}}
 {{define "foot"}}</main></body></html>{{end}}
 {{define "index"}}{{template "head" .}}<header><div class="subtle">Durable Items and Notes</div><h1>Stuff</h1><div class="subtle">Recently active · page {{.Page}} of {{.Pages}}</div></header>{{if .Truncated}}<p class="warning">This view is bounded to a sample of 200 Items and 200 Notes; activity outside that sample may be omitted.</p>{{end}}{{if .Items}}{{range .Items}}<a class="card" data-activity="{{.ActivityAt}}" href="{{.Path}}"><h2>{{.Name}}</h2><div class="stamp">{{.ActivityAt}} · {{.ActivitySource}}</div><div class="subtle">{{.ID}}</div></a>{{end}}{{else}}<p>No Items yet.</p>{{end}}<nav class="pager"><span>{{if .HasPrevious}}<a href="/read?page={{.Previous}}">← Newer</a>{{end}}</span><span>{{if .HasNext}}<a href="/read?page={{.Next}}">Older →</a>{{end}}</span></nav><script src="/read/activity.js" defer></script>{{template "foot" .}}{{end}}
-{{define "detail"}}{{template "head" .}}<a class="back" href="/read">← All Items</a><header><h1>{{.Item.Name}}</h1><div class="subtle">{{.Item.ID}}</div><div class="stamp">Created {{.Item.CreatedAt}} · Item updated {{.Item.UpdatedAt}}</div></header><h2>Metadata</h2><pre class="meta">{{.Item.Metadata}}</pre><h2>Notes</h2>{{if .Truncated}}<p class="warning">Only the first 200 matching Notes are shown.</p>{{end}}{{if .Notes}}{{range .Notes}}<article class="note"><h2>{{.CreatedAt}}</h2><div class="subtle">{{.ID}}</div>{{if .Body}}<div class="markdown">{{.Body}}</div>{{end}}<details><summary>Metadata</summary><pre class="meta">{{.Metadata}}</pre></details>{{if .Attachments}}<h3>Attachments</h3><ul class="attachments">{{range .Attachments}}<li><a href="{{.Path}}">{{.Name}}</a> <span class="subtle">{{.MediaType}} · {{.Bytes}} bytes · download</span></li>{{end}}</ul>{{end}}</article>{{end}}{{else}}<p>No Notes yet.</p>{{end}}{{template "foot" .}}{{end}}
+{{define "detail"}}{{template "head" .}}<a class="back" href="/read">← All Items</a><header><h1>{{.Item.Name}}</h1><div class="subtle">{{.Item.ID}}</div><div class="stamp">Created {{.Item.CreatedAt}} · Item updated {{.Item.UpdatedAt}}</div></header><h2>Metadata</h2><pre class="meta">{{.Item.Metadata}}</pre><h2>Notes</h2>{{if .Truncated}}<p class="warning">Only the first 200 matching Notes are shown.</p>{{end}}{{if .Notes}}{{range .Notes}}<article class="note"><h2>{{.CreatedAt}}</h2><div class="subtle">{{.ID}}</div>{{if .Body}}<div class="markdown">{{.Body}}</div>{{end}}<details><summary>Metadata</summary><pre class="meta">{{.Metadata}}</pre></details>{{if .Attachments}}<h3>Attachments</h3><ul class="attachments">{{range .Attachments}}<li>{{if .CanView}}<a href="{{.ViewPath}}">View {{.Name}}</a> · {{end}}<a href="{{.Path}}">Download</a> <span class="subtle">{{.MediaType}} · {{.Bytes}} bytes</span></li>{{end}}</ul>{{end}}</article>{{end}}{{else}}<p>No Notes yet.</p>{{end}}{{template "foot" .}}{{end}}
 `
