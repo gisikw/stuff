@@ -1,526 +1,207 @@
 # Stuff
 
-**Status:** tested MVP
+Stuff is a small durable store for named Items, Notes about those Items, and optional JSON Schemas that document recurring metadata conventions.
 
-Stuff is a small durable store for named Items, Notes about those Items, and optional documentation describing recurring metadata conventions.
+It is designed for humans, scripts, and agents that need to leave behind structured context without adopting a task manager or workflow engine.
 
-It is intended for humans and agents who need to leave behind enough structured context that later participants can discover what exists, understand how prior participants represented it, query it, and continue the work.
+> Stuff stores Items and Notes. Schemas document optional conventions. Everything else is client interpretation.
 
-Stuff is not a task manager or execution engine.
+## Status
 
-## Running the MVP
+Stuff is an early, tested MVP. The CLI and HTTP service are provided by one Go binary, backed by CouchDB.
 
-Stuff is one Go binary. The CLI talks to the HTTP service; the service is the only
-component that receives CouchDB credentials.
+## Why Stuff?
+
+Most work-tracking systems begin by prescribing a lifecycle: projects contain tasks, tasks have statuses and priorities, dependencies form a graph, and workers move records through a workflow.
+
+Stuff deliberately does less.
+
+- An **Item** is a durable namespace for any concern.
+- A **Note** is an inert statement associated with one Item.
+- A **Schema** is optional documentation for a metadata convention.
+- **Metadata** is arbitrary bounded JSON owned by clients.
+- **Queries** use CouchDB Mango directly rather than a private query language.
+
+There are no intrinsic projects, epics, statuses, priorities, owners, deadlines, dependencies, workers, retries, schedules, or execution semantics.
+
+## Installation
+
+### Nix
 
 ```bash
-nix develop                         # Go, CouchDB, and development tools
-nix build                           # produces result/bin/stuff
+nix profile install github:gisikw/stuff
+stuff --help
+```
 
-export STUFF_COUCH_URL=http://127.0.0.1:5984
+Or run it without installing:
+
+```bash
+nix run github:gisikw/stuff -- --help
+```
+
+### Go
+
+Go 1.24 or newer is required.
+
+```bash
+go install github.com/gisikw/stuff/cmd/stuff@latest
+```
+
+## Quick start
+
+Stuff requires CouchDB 3.x. This example starts a development instance with Docker:
+
+```bash
+docker run -d --name stuff-couch \
+  -p 127.0.0.1:5984:5984 \
+  -e COUCHDB_USER=stuff \
+  -e COUCHDB_PASSWORD=development-only \
+  couchdb:3
+```
+
+Start the Stuff service:
+
+```bash
+export STUFF_COUCH_URL=http://stuff:development-only@127.0.0.1:5984
 export STUFF_COUCH_DB=stuff
-export STUFF_COUCH_USER=stuff
-export STUFF_COUCH_PASSWORD_FILE=/run/credentials/stuff/couchdb-password
-export STUFF_TOKEN_FILE=/run/credentials/stuff/api-token # or use STUFF_TOKEN
+export STUFF_TOKEN=development-api-token
 stuff serve
 ```
 
-`STUFF_LISTEN` defaults to `127.0.0.1:7847`. Clients use `STUFF_URL` and
-`STUFF_TOKEN`. A CouchDB URL containing credentials is also accepted for local
-development, but password files are preferred for deployment. The service creates its
-database if necessary. CouchDB remains loopback-only on Azula; Stuff is the bounded
-gateway.
+In another shell:
 
-The MVP stores attachments using CouchDB attachment bodies, returns only descriptors in
-ordinary Note JSON, and forces downloads through a sandboxing CSP and attachment content
-disposition. A separate document origin remains the intended production boundary for
-active HTML.
+```bash
+export STUFF_URL=http://127.0.0.1:7847
+export STUFF_TOKEN=development-api-token
 
-Verification includes unit/HTTP contract tests and a live CouchDB integration covering
-Items, point-in-time validation and drift, Notes, attachment round-tripping, Mango
-projection and selectors, explain, and describe.
+item=$(stuff add "Evaluate a database migration" \
+  --meta '{"area":"infrastructure","state":"open"}')
 
-## Thesis
+stuff note add "$item" \
+  "The dry run completed without data loss." \
+  --meta '{"kind":"observation"}'
 
-> Stuff stores Items and Notes. Some metadata conventions may be documented as Schemas. Everything else is interpretation performed by clients.
+stuff get "$item" --pretty
+```
 
-An Item is a durable namespace for a concern: a branch node on a mind map, not a work-tracking form whose fields imply a prescribed lifecycle.
+Create commands print only the new ID, making shell composition reliable.
 
-An Item might be narrow:
-
-- Fix the stale sidebar color assertion
-- Find my keys
-- Investigate mobile voice playback cutoff
-
-Or broad:
-
-- Familiar
-- Fort Nix
-- Home
-
-There is no separate Project, Epic, Quest, or Milestone type. Those are Items whose metadata and relationships a client happens to find meaningful.
-
-A Note is an inert statement made about an Item. It may contain text, arbitrary metadata, and attachments. A Note can describe an attempted fix, record a decision, hold a runbook, attach a report, or say "I tried this and it went badly." Those interpretations do not create behavioral subtypes.
-
-## Vocabulary
-
-- **Stuff** — the product and CLI.
-- **Item** — a named durable namespace with arbitrary metadata.
-- **Note** — a timestamped statement associated with an Item.
-- **Schema** — optional documentation for a recurring metadata convention, with validation available when explicitly requested.
-
-The vocabulary is deliberately plain. In particular:
-
-- an Item is not necessarily actionable or completable;
-- a Note is not an event in a workflow state machine;
-- a Schema is not an enforced database constraint.
-
-## Minimum primitives
+## Data model
 
 ### Item
 
-An Item has a small system-owned envelope and caller-owned metadata.
-
 ```json
 {
-  "id": "item_01J6A9…",
-  "name": "Mobile voice simplification and hardening",
-  "created_at": "2026-08-26T22:00:00.000Z",
-  "updated_at": "2026-08-26T22:11:43.219Z",
-  "revision": "3-9e28…",
+  "id": "item_…",
+  "name": "Evaluate a database migration",
+  "created_at": "2026-08-27T03:00:00Z",
+  "updated_at": "2026-08-27T03:10:00Z",
+  "revision": "2-…",
   "metadata": {
-    "area": "familiar",
-    "parent_item_id": "item_familiar",
-    "state": "open",
-    "next_action": "Capture playback lifecycle diagnostics"
+    "area": "infrastructure",
+    "state": "open"
   }
 }
 ```
 
-System fields:
-
-- `id` — stable opaque identifier. Ordering uses timestamps, never ID shape.
-- `name` — human- and model-legible name for the namespace.
-- `created_at` — server timestamp.
-- `updated_at` — server timestamp.
-- `revision` — optimistic edit token preventing silent lost updates. It is not a work lock or lease.
-- `metadata` — arbitrary bounded JSON owned by callers.
-
-Stuff does not intrinsically define:
-
-- status;
-- priority;
-- completion;
-- ownership;
-- deadlines;
-- parents or children;
-- projects or epics;
-- dependencies.
-
-Clients may establish any of those by convention in `metadata`.
+The system owns the ID, timestamps, and optimistic revision. The caller owns the name and metadata. Metadata may be any JSON value, although objects are usually the most queryable convention.
 
 ### Note
 
-A Note says something about one Item.
-
 ```json
 {
-  "id": "note_01J6AB…",
-  "item_id": "item_01J6A9…",
-  "created_at": "2026-08-26T23:02:18.440Z",
-  "updated_at": "2026-08-26T23:02:18.440Z",
-  "revision": "1-761b…",
-  "text": "Heh, yeah, I tried fixing this bug. Lemme tell ya about it.",
+  "id": "note_…",
+  "item_id": "item_…",
+  "created_at": "2026-08-27T03:12:00Z",
+  "updated_at": "2026-08-27T03:12:00Z",
+  "revision": "1-…",
+  "text": "The dry run completed without data loss.",
   "metadata": {
-    "kind": "attempt",
-    "external_system": "golem",
-    "external_id": "job-b04b…",
-    "started_at": "2026-08-26T22:31:00Z",
-    "finished_at": "2026-08-26T23:01:40Z",
-    "outcome": "mixed"
+    "kind": "observation"
   },
   "attachments": []
 }
 ```
 
-A Note has:
-
-- a stable ID and revision;
-- exactly one associated Item;
-- optional text;
-- arbitrary bounded metadata;
-- zero or more attachments.
-
-Words such as `attempt`, `decision`, `report`, `runbook`, and `observation` are useful metadata conventions. They are not enforced Note classes.
-
-A Golem dispatch may be recorded as a Note containing an external ID, timestamps, and a narrative. Stuff does not ask whether the Golem still exists, synchronize its state, retry it, or treat that Note as authoritative execution state.
+A Note belongs to exactly one Item. Terms such as `decision`, `attempt`, `report`, `runbook`, and `observation` are metadata conventions, not behavioral subtypes.
 
 ### Attachments
 
-Documents are Notes with attachments, not a separate domain class.
-
-```json
-{
-  "item_id": "item_presence",
-  "text": "Presence lifecycle design",
-  "metadata": {
-    "kind": "document",
-    "role": "design"
-  },
-  "attachments": [
-    {
-      "name": "presence-lifecycle.html",
-      "media_type": "text/html",
-      "bytes": 18422,
-      "sha256": "d98c…",
-      "url": "https://documents.example/note_01J6AC/presence-lifecycle.html"
-    }
-  ]
-}
-```
-
-Each independently changing document should generally have its own Note. This gives it independent provenance and revision history and avoids mutating an Item whenever an attachment changes.
-
-Large payloads may eventually live in content-addressed object storage while Stuff retains attachment metadata and stable retrieval URLs.
-
-Arbitrary HTML must be served from an isolated document origin with appropriate content security policy and sandboxing. It must not execute on the authenticated application origin.
-
-## Schemas: documentation with an optional validator
-
-A Schema documents how somebody previously decided to represent a recurring shape of metadata.
-
-It is analogous to `DESCRIBE TABLES`, not a database integrity constraint.
-
-Schemas should use standard JSON Schema rather than a novel type language. Schema writes are rare; interoperability and discoverability matter more than concision.
+Documents are Notes with attachments:
 
 ```bash
-stuff schema add todo @todo.schema.json
-stuff schemas
-stuff schema get todo
+stuff note add "$item" "Migration report" \
+  --meta '{"kind":"report"}' \
+  --attach report.html \
+  --attach timings.csv
 ```
 
-Example schema:
+Ordinary Note retrieval and queries return attachment descriptors, never inline bodies. Attachment downloads use a restrictive content security policy, `nosniff`, and attachment disposition. Deployments that intentionally render active HTML should use a separate document origin.
+
+## Advisory Schemas
+
+Schemas use standard JSON Schema. They document a convention and validate metadata only when explicitly requested.
 
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["project", "priority"],
+  "required": ["area", "impact"],
   "properties": {
-    "project": { "type": "string" },
-    "priority": { "type": "number" }
+    "area": { "type": "string" },
+    "impact": { "type": "number" }
   },
   "additionalProperties": true
 }
 ```
 
-Validation is explicitly requested and applies to that operation or question.
-
 ```bash
-stuff schema check todo --meta @candidate.json
-stuff schema check todo item_123
+stuff schema add assessment @assessment.schema.json
+
+item=$(stuff add "Assess cache behavior" \
+  --meta '{"area":"performance","impact":4}' \
+  --validate assessment)
+
+stuff schema check assessment "$item"
+stuff schema check assessment --meta '{"area":"reliability","impact":5}'
 ```
 
-Write-time convenience:
+Validation is a point-in-time question, not an enduring promise. A later write without `--validate` may drift from the convention and is accepted:
 
 ```bash
-stuff add "Find my keys" \
-  --meta '{"project":"home","priority":5}' \
-  --validate todo
-# item_…
+stuff update "$item" --meta '{"notes":"convention intentionally changed"}'
 ```
 
-```bash
-stuff add "Find my keys" \
-  --meta '{"priority":5}' \
-  --validate todo
-# error: metadata.project is required by schema "todo"
-```
+Successful validation does not attach a Schema to an Item. Updating a Schema does not scan, migrate, or invalidate existing records. External schema resources are not fetched during compilation; validation is offline.
 
-An Item may later drift out of conformance:
+## Mango queries
 
-```bash
-stuff update item_123 --meta '{"location":"probably the garage"}'
-# accepted
-```
-
-A caller may request validation during an update:
-
-```bash
-stuff update item_123 \
-  --meta '{"project":"home","priority":3}' \
-  --validate todo
-```
-
-Successful validation is a point-in-time result. It does not attach the Schema to the Item or create an ongoing conformance promise.
-
-Schema changes do not scan, migrate, reject, or invalidate existing Items. Stuff does not promise that an Item previously checked against `todo` still satisfies `todo`.
-
-The Schema means:
-
-> Someone intended this metadata convention to look like this. Here is their documentation. Check it when useful.
-
-Updating a Schema updates the documentation. Historical definitions may remain available through ordinary revision history, but Stuff does not create a migration subsystem.
-
-Agents may inspect Schemas and derive Mango selectors using operators such as `$exists`, `$type`, `$and`, and `$not` to find records that do or do not resemble a convention.
-
-## Query language
-
-Stuff uses full CouchDB Mango selector semantics rather than inventing a subset.
-
-A subset would create a new language agents must discover through failure. Full Mango is documented, represented in model training data, and implemented by the likely storage substrate.
-
-Example:
+`stuff find` and `stuff note find` accept full CouchDB Mango query envelopes.
 
 ```bash
 stuff find <<'JSON'
 {
   "selector": {
-    "metadata.area": "familiar",
-    "metadata.state": "open"
+    "metadata.area": "infrastructure",
+    "updated_at": {"$gte": "2026-01-01T00:00:00Z"}
   },
-  "fields": [
-    "id",
-    "name",
-    "metadata.next_action",
-    "updated_at"
-  ],
+  "fields": ["id", "name", "metadata.state", "updated_at"],
   "sort": [{"updated_at": "desc"}],
   "limit": 50
 }
 JSON
 ```
 
-Query envelope:
-
-```json
-{
-  "selector": {},
-  "fields": [],
-  "sort": [],
-  "limit": 50,
-  "bookmark": "opaque-token-from-prior-page"
-}
-```
-
-Expected Mango selector vocabulary includes:
-
-- implicit equality and AND;
-- `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`;
-- `$exists`, `$type`;
-- `$in`, `$nin`, `$all`, `$size`, `$elemMatch`, `$allMatch`;
-- `$and`, `$or`, `$not`, `$nor`;
-- `$beginsWith`, `$regex`, `$mod`;
-- `$keyMapMatch`;
-- `$text` only when a compatible text-search index exists.
-
-Full Mango does not imply unbounded resource use. The service may cap:
-
-- selector depth and encoded request size;
-- page size;
-- execution time;
-- regex length;
-- returned bytes.
-
-Those are resource policies, not language differences.
-
-At the expected scale, fallback scans are acceptable. Stuff should expose warnings when no useful index exists rather than rejecting the query. Repeated real query shapes can later justify indexes along demonstrated desire paths.
-
-## Agent interface: a CLI, not a forest of tools
-
-The canonical agent interface is the `stuff` CLI invoked through an ordinary shell execution tool.
-
-Agents are already fluent in shell composition. A single Bash call containing a short script is cheaper, clearer, and more expressive than many custom CRUD tool turns.
+Stuff preserves Mango selectors, projections, sorts, bookmarks, warnings, and explain behavior while adding the Item or Note type boundary. Resource limits constrain request and response size; they do not replace Mango with a subset.
 
 ```bash
-d=$(stuff add "Do the dishes") &&
-  stuff note add "$d" "Use the powdered detergent"
+stuff explain @query.json --pretty
+stuff describe --pretty
 ```
 
-Another example:
+`stuff describe` reports envelopes, supported operators, limits, observed metadata paths and types, bounded examples, available indexes, and text-search availability. It is a map of observed conventions, not inferred enforcement.
 
-```bash
-item=$(stuff add "Mobile voice hardening" \
-  --meta '{"area":"familiar","state":"open"}') &&
-
-stuff note add "$item" \
-  "Assistant playback stopped during a driving voice turn." \
-  --meta '{"kind":"observation"}'
-```
-
-Attach a report:
-
-```bash
-stuff note add "$item" \
-  "Playback lifecycle investigation" \
-  --meta '{"kind":"report"}' \
-  --attach report.html
-```
-
-Query recent Notes:
-
-```bash
-stuff note find <<JSON
-{
-  "selector": {
-    "item_id": "$item",
-    "created_at": {"\$gte": "2026-08-20T00:00:00Z"}
-  },
-  "sort": [{"created_at":"desc"}],
-  "limit": 20
-}
-JSON
-```
-
-### CLI output contract
-
-Shell composition makes output discipline load-bearing.
-
-- Successful create operations write only the new ID to stdout by default.
-- Diagnostics and warnings go to stderr.
-- Failures return nonzero.
-- Retrieval and query operations return stable JSON.
-- Large bodies and queries may be supplied through stdin or files.
-- Machine behavior must not change merely because stdout is a TTY.
-- Human-oriented formatting is explicit, for example `--pretty`.
-- Large attachment bodies are never dumped into ordinary list/query output.
-
-The CLI may communicate with a local or remote Stuff service. The service transport is an implementation detail; agents should not need to manage raw CouchDB requests, credentials, or revision fields unnecessarily.
-
-## Discoverability
-
-There are two discovery problems:
-
-1. learning the query language;
-2. learning the metadata conventions used by this particular store.
-
-Full Mango addresses the first. Stuff must explicitly support the second.
-
-```bash
-stuff --help
-stuff find --help
-stuff schemas
-stuff describe
-stuff explain @query.json
-```
-
-`stuff describe` should report bounded information such as:
-
-- Item and Note envelopes;
-- supported Mango version and operators;
-- query and payload limits;
-- observed metadata paths;
-- observed JSON types and presence counts;
-- bounded example values;
-- common Note metadata conventions such as `kind`;
-- available indexes;
-- whether text search is configured;
-- executable examples using vocabulary present in the current store.
-
-Example:
-
-```json
-{
-  "items": 84,
-  "observed_fields": [
-    {
-      "path": "metadata.area",
-      "types": ["string"],
-      "present": 71,
-      "examples": ["familiar", "golem", "fort-nix"]
-    },
-    {
-      "path": "metadata.state",
-      "types": ["string"],
-      "present": 52,
-      "examples": ["open", "done", "deferred"]
-    },
-    {
-      "path": "metadata.parent_item_id",
-      "types": ["string"],
-      "present": 38
-    }
-  ],
-  "mango_reference": "CouchDB 3.5 Mango selectors",
-  "limits": {
-    "limit_max": 200,
-    "selector_bytes_max": 65536
-  }
-}
-```
-
-This is not an inferred schema registry. It is a map of footprints in the snow.
-
-Errors should be corrective. A malformed query or failed validation should include:
-
-- the failing JSON path;
-- the original reason;
-- the expected shape or nearest valid form;
-- a small corrected example where practical.
-
-An agent should normally repair an error in one attempt.
-
-## Storage recommendation
-
-CouchDB is a strong initial substrate because it already provides:
-
-- arbitrary JSON documents;
-- Mango querying, projection, sorting, bookmarks, and explain;
-- stable IDs and optimistic revisions;
-- attachments with MIME types and range requests;
-- a changes feed;
-- acceptable fallback scans at small scale;
-- replication if it is ever actually needed.
-
-Stuff should expose a thin gateway rather than raw CouchDB administration or credentials. The gateway owns:
-
-- public Item, Note, Schema, and attachment contracts;
-- server timestamps;
-- payload and query limits;
-- stable document URLs;
-- authentication;
-- `describe` and corrective errors;
-- isolation of active attachment content.
-
-The gateway should preserve full Mango selector behavior. It should not emulate a novel partial version of Mango.
-
-SQLite with JSON/JSONB remains a credible future substrate. It is not the recommended first implementation because accepting full Mango over SQLite would require building and testing a query compiler, selector edge cases, collation, pagination, explain behavior, and error compatibility before the primitive has earned that work.
-
-## Hard scope boundaries
-
-Stuff owns:
-
-- Item identity and names;
-- arbitrary bounded Item metadata;
-- Notes and their arbitrary bounded metadata;
-- attachments;
-- server timestamps and revisions;
-- advisory Schemas;
-- explicitly requested validation;
-- full Mango querying and pagination;
-- introspection and corrective errors;
-- stable attachment retrieval.
-
-Stuff does **not** own:
-
-- execution or dispatch;
-- attempts or retries;
-- workers or worker recovery;
-- locks, leases, or duplicate-execution prevention;
-- scheduling;
-- reconciliation with external systems;
-- worklist or notification semantics;
-- status or priority enums;
-- projects, epics, quests, or milestones;
-- dependency enforcement or DAG validity;
-- automatic handoff or surfacing policy;
-- schema migrations or continual schema enforcement.
-
-Clients may implement any of those using queries and conventions. That does not move the behavior into Stuff. Stuff may record that an execution occurred; that does not make Stuff an execution engine.
-
-## Provisional CLI surface
-
-Names may change, but the first implementation should remain close to:
+## CLI reference
 
 ```text
 stuff add NAME [--meta JSON|@FILE] [--validate SCHEMA]
@@ -540,18 +221,67 @@ stuff schemas
 
 stuff describe
 stuff explain [@QUERY | stdin]
+stuff serve
 ```
 
-Revision checks prevent accidental lost edits. They are not locks on work.
+Output behavior is intentionally shell-safe:
 
-## Suggested first proof
+- creates print only the new ID to stdout;
+- diagnostics go to stderr;
+- failures return nonzero;
+- retrieval and query commands emit stable compact JSON;
+- `--pretty` explicitly enables indented output;
+- behavior does not change because stdout is a terminal;
+- JSON and queries may be supplied inline, from `@FILE`, or from stdin where documented.
 
-1. Stand up a local Stuff service backed by CouchDB.
-2. Implement the minimum CLI create/get/update/find paths for Items and Notes.
-3. Add full Mango passthrough with bounded limits and useful errors.
-4. Add Schema storage, listing, and explicit JSON Schema validation.
-5. Migrate the Azula first-day ledger into Items and Notes.
-6. Give a fresh agent only `stuff --help` and access to the CLI.
-7. Ask it to discover the active Familiar concerns and retrieve the relevant history.
+## Configuration
 
-The proof succeeds if the agent can orient itself with `stuff describe`, `stuff schemas`, and one or two Mango queries—without being taught a private query language and without Stuff becoming responsible for executing any of the work it describes.
+### CLI
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `STUFF_URL` | `http://127.0.0.1:7847` | Stuff service URL |
+| `STUFF_TOKEN` | empty | Bearer token |
+| `STUFF_TOKEN_FILE` | empty | File containing the bearer token |
+
+### Service
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `STUFF_LISTEN` | `127.0.0.1:7847` | HTTP listen address |
+| `STUFF_COUCH_URL` | `http://127.0.0.1:5984` | CouchDB endpoint |
+| `STUFF_COUCH_DB` | `stuff` | Database name |
+| `STUFF_COUCH_USER` | `stuff` | CouchDB user when using a password file |
+| `STUFF_COUCH_PASSWORD_FILE` | empty | File containing the CouchDB password |
+| `STUFF_TOKEN` | empty | API bearer token |
+| `STUFF_TOKEN_FILE` | empty | File containing the API bearer token |
+
+Credentials embedded in `STUFF_COUCH_URL` are supported for development. Password files are preferred for service deployments. CouchDB credentials are consumed only by the gateway and should not be distributed to CLI clients.
+
+`GET /health` is an unauthenticated liveness endpoint. Other endpoints require the configured bearer token. If no token is configured, bind Stuff only to a trusted loopback or private interface.
+
+## Scope boundaries
+
+Stuff stores records about work. It does not perform work.
+
+Stuff does **not** own:
+
+- dispatch, execution, workers, retries, or recovery;
+- locks, leases, schedules, or reconciliation;
+- workflow states, notifications, or surfacing policy;
+- project, epic, milestone, or dependency semantics;
+- schema migrations or continuous validation.
+
+Clients may represent any of those ideas in metadata and query them. That does not move their behavior into Stuff.
+
+## Development
+
+```bash
+nix develop
+go test ./...
+go vet ./...
+nix build
+nix flake check
+```
+
+The test suite covers HTTP and CLI contracts, optimistic revision conflicts, point-in-time validation and drift, arbitrary JSON metadata, Mango passthrough, authentication, and query correction. Live integration is tested against CouchDB 3.x.

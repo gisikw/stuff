@@ -51,6 +51,10 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	if r.URL.Path == "/health" && r.Method == http.MethodGet {
+		writeJSON(w, http.StatusOK, Document{"status": "ok"})
+		return
+	}
 	if s.token != "" && r.Header.Get("Authorization") != "Bearer "+s.token {
 		writeError(w, http.StatusUnauthorized, "authorization", "missing or invalid bearer token", "set STUFF_TOKEN to the service token")
 		return

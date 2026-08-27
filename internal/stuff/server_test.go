@@ -115,6 +115,18 @@ func errReason(d Document) string {
 	return s
 }
 
+func TestHealthIsPublicButDataRequiresToken(t *testing.T) {
+	h := NewServer(newMemoryStore(), "secret", nil).Handler()
+	code, health := request(t, h, "GET", "/health", nil)
+	if code != 200 || health["status"] != "ok" {
+		t.Fatalf("health: %d %#v", code, health)
+	}
+	code, unauthorized := request(t, h, "GET", "/v1/describe", nil)
+	if code != 401 || !strings.Contains(errReason(unauthorized), "bearer") {
+		t.Fatalf("auth: %d %#v", code, unauthorized)
+	}
+}
+
 func TestValidationIsPointInTimeOnly(t *testing.T) {
 	store := newMemoryStore()
 	srv := NewServer(store, "", nil)
