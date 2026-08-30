@@ -4,12 +4,31 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func htmlRequest(h http.Handler, method, path string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	return w
+}
+
+func readFormRequest(h http.Handler, method, path string, values url.Values, token string) *httptest.ResponseRecorder {
+	var body io.Reader
+	if values != nil {
+		body = strings.NewReader(values.Encode())
+	}
+	req := httptest.NewRequest(method, path, body)
+	if values != nil {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	return w
@@ -48,6 +67,118 @@ func TestReadSurfaceIsPublicButAPIRemainsProtected(t *testing.T) {
 	api := htmlRequest(h, http.MethodGet, "/v1/describe")
 	if api.Code != http.StatusUnauthorized {
 		t.Fatalf("API unexpectedly public: %d %s", api.Code, api.Body.String())
+	}
+}
+
+func TestReadItemCreatesMultilineNoteWithServerTimestampsAndRedirect(t *testing.T) {
+	store := newMemoryStore()
+	putReadFixture(t, store, "item_target", "item", "Target", "", "2026-08-27T01:00:00Z", "2026-08-27T01:00:00Z", "")
+	srv := NewServer(store, "secret", nil)
+	srv.now = func() time.Time { return time.Date(2026, 8, 30, 12, 34, 56, 789, time.UTC) }
+	h := srv.Handler()
+
+	page := htmlRequest(h, http.MethodGet, "/read/items/item_target")
+	for _, want := range []string{`<form class="note-form" method="post" action="/read/items/item_target/notes">`, `<label for="new-note-text">Add a Note</label>`, `textarea id="new-note-text" name="text"`, `form-action 'self'`} {
+		if !strings.Contains(page.Body.String(), want) && !strings.Contains(page.Header().Get("Content-Security-Policy"), want) {
+			t.Fatalf("accessible Note form missing %q: %s %#v", want, page.Body.String(), page.Header())
+		}
+	}
+
+	text := "first line\nsecond café line\n<script>alert(1)</script>"
+	created := readFormRequest(h, http.MethodPost, "/read/items/item_target/notes", url.Values{"text": {text}}, "secret")
+	if created.Code != http.StatusSeeOther || created.Header().Get("Location") != "/read/items/item_target" || created.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("POST-redirect-GET response: %d %#v %s", created.Code, created.Header(), created.Body.String())
+	}
+
+	var note Document
+	for _, doc := range store.docs {
+		if doc["stuff_kind"] == "note" {
+			note = doc
+		}
+	}
+	stamp := "2026-08-30T12:34:56.000000789Z"
+	if note == nil || note["item_id"] != "item_target" || note["text"] != text || note["created_at"] != stamp || note["updated_at"] != stamp {
+		t.Fatalf("stored Note envelope: %#v", note)
+	}
+	if metadata, ok := note["metadata"].(map[string]any); !ok || len(metadata) != 0 {
+		t.Fatalf("default Note metadata changed: %#v", note["metadata"])
+	}
+
+	redirected := htmlRequest(h, http.MethodGet, created.Header().Get("Location"))
+	body := redirected.Body.String()
+	if redirected.Code != http.StatusOK || !strings.Contains(body, "first line<br>second café line") || !strings.Contains(body, "&lt;script&gt;alert(1)&lt;/script&gt;") || strings.Contains(body, "<script>alert(1)</script>") {
+		t.Fatalf("new Note was not safely rendered after redirect: %d %s", redirected.Code, body)
+	}
+}
+
+func TestReadItemNoteCreationBindsTargetAndRejectsInvalidBodies(t *testing.T) {
+	store := newMemoryStore()
+	putReadFixture(t, store, "item_a", "item", "A", "", "2026-08-27T01:00:00Z", "2026-08-27T01:00:00Z", "")
+	putReadFixture(t, store, "item_b", "item", "B", "", "2026-08-27T01:00:00Z", "2026-08-27T01:00:00Z", "")
+	h := NewServer(store, "", nil).Handler()
+
+	cases := []struct {
+		name   string
+		values url.Values
+		status int
+		want   string
+	}{
+		{"empty", url.Values{"text": {" \n\t"}}, http.StatusBadRequest, "cannot be empty"},
+		{"oversized", url.Values{"text": {strings.Repeat("x", maxReadNoteTextBytes+1)}}, http.StatusRequestEntityTooLarge, "byte limit"},
+		{"substituted target", url.Values{"text": {"wrong target"}, "item_id": {"item_b"}}, http.StatusBadRequest, "exactly one text field"},
+		{"duplicate body", url.Values{"text": {"one", "two"}}, http.StatusBadRequest, "exactly one text field"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := readFormRequest(h, http.MethodPost, "/read/items/item_a/notes", tc.values, "")
+			if w.Code != tc.status || !strings.Contains(w.Body.String(), tc.want) {
+				t.Fatalf("invalid form response: %d %s", w.Code, w.Body.String())
+			}
+		})
+	}
+	for _, doc := range store.docs {
+		if doc["stuff_kind"] == "note" {
+			t.Fatalf("invalid request created Note: %#v", doc)
+		}
+	}
+}
+
+func TestReadItemNoteCreationHonorsBrowserAuthMethodAndFormBoundaries(t *testing.T) {
+	store := newMemoryStore()
+	putReadFixture(t, store, "item_auth", "item", "Auth", "", "2026-08-27T01:00:00Z", "2026-08-27T01:00:00Z", "")
+	h := NewServer(store, "secret", nil).Handler()
+	path := "/read/items/item_auth/notes"
+
+	// Like browser GETs, this narrowly scoped form is authorized by the
+	// deployment's identity gate rather than exposing STUFF_TOKEN to HTML.
+	browserPost := readFormRequest(h, http.MethodPost, path, url.Values{"text": {"identity-gated"}}, "")
+	if browserPost.Code != http.StatusSeeOther {
+		t.Fatalf("identity-gated browser mutation required API credentials: %d %s", browserPost.Code, browserPost.Body.String())
+	}
+	api := htmlRequest(h, http.MethodGet, "/v1/describe")
+	if api.Code != http.StatusUnauthorized {
+		t.Fatalf("API auth boundary changed: %d %s", api.Code, api.Body.String())
+	}
+	wrongMethod := readFormRequest(h, http.MethodPut, path, url.Values{"text": {"no"}}, "secret")
+	if wrongMethod.Code != http.StatusMethodNotAllowed || wrongMethod.Header().Get("Allow") != http.MethodPost {
+		t.Fatalf("method boundary: %d %#v %s", wrongMethod.Code, wrongMethod.Header(), wrongMethod.Body.String())
+	}
+	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader("text=no"))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Sec-Fetch-Site", "cross-site")
+	crossSite := httptest.NewRecorder()
+	h.ServeHTTP(crossSite, request)
+	if crossSite.Code != http.StatusForbidden {
+		t.Fatalf("cross-site form accepted: %d %s", crossSite.Code, crossSite.Body.String())
+	}
+	wrongType := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"text":"no"}`))
+	wrongType.Header.Set("Content-Type", "application/json")
+	wrongType.Header.Set("Authorization", "Bearer secret")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, wrongType)
+	if response.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("non-form submission accepted: %d %s", response.Code, response.Body.String())
 	}
 }
 

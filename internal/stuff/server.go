@@ -65,9 +65,18 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost && s.serveReadViewQueryRoute(w, r) {
 		return
 	}
+	if id, ok := readItemNoteTarget(r.URL.Path); ok && r.Method == http.MethodPost {
+		s.createReadNote(w, r, id)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if s.token != "" && r.Header.Get("Authorization") != "Bearer "+s.token {
 		writeError(w, http.StatusUnauthorized, "authorization", "missing or invalid bearer token", "set STUFF_TOKEN to the service token")
+		return
+	}
+	if _, ok := readItemNoteTarget(r.URL.Path); ok {
+		w.Header().Set("Allow", http.MethodPost)
+		readHTTPError(w, http.StatusMethodNotAllowed, "Only POST can create a Note")
 		return
 	}
 	p := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1"), "/")
@@ -402,6 +411,15 @@ func (a *attachmentInput) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+func (s *Server) newNoteDocument(itemID string, text *string, meta any) Document {
+	now := s.now().UTC().Format(time.RFC3339Nano)
+	doc := Document{"stuff_kind": "note", "item_id": itemID, "created_at": now, "updated_at": now, "metadata": meta}
+	if text != nil {
+		doc["text"] = *text
+	}
+	return doc
+}
+
 func (s *Server) createNote(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
 		ItemID      string            `json:"item_id"`
@@ -434,11 +452,7 @@ func (s *Server) createNote(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	now := s.now().UTC().Format(time.RFC3339Nano)
-	doc := Document{"stuff_kind": "note", "item_id": in.ItemID, "created_at": now, "updated_at": now, "metadata": meta}
-	if in.Text != nil {
-		doc["text"] = *in.Text
-	}
+	doc := s.newNoteDocument(in.ItemID, in.Text, meta)
 	if len(in.Attachments) > 0 {
 		couch := map[string]any{}
 		metas := map[string]any{}

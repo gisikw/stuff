@@ -89,15 +89,15 @@ Create commands print only the new ID, making shell composition reliable.
 
 ## Browser reading surface
 
-`stuff serve` includes a read-only browser surface:
+`stuff serve` includes a human-readable browser surface:
 
 - `/read` permanently lists Items by effective activity, including activity from linked Notes.
 - `/read/items/<item-id>` shows the generic Item detail or its explicitly referenced View.
 - `/` renders the ReaderConfig homepage Item when configured and otherwise redirects to `/read`.
 
-The activity view deliberately reads a bounded sample of at most 200 Items and 200 Notes, then paginates that sample locally. It displays a warning when either bound is reached. Cards show generic Note counts, humanized timestamps, and shortened IDs without interpreting metadata; full IDs remain available through links or copy controls. Generic Item pages let readers toggle Note chronology. Note text uses a conservative Markdown renderer that treats stored HTML as inert text. Attachments retain a forced-download path. HTML attachments also have an explicit full-page view whose response is forced into an opaque CSP sandbox: scripts and external resources are disabled, inline styles and data images/fonts are allowed, and `nosniff` remains enabled.
+The activity view deliberately reads a bounded sample of at most 200 Items and 200 Notes, then paginates that sample locally. It displays a warning when either bound is reached. Cards show generic Note counts, humanized timestamps, and shortened IDs without interpreting metadata; full IDs remain available through links or copy controls. Generic Item pages let readers toggle Note chronology and append a text Note with an ordinary POST-redirect-GET form. Form Notes have server-owned timestamps, empty metadata, and a UTF-8 text limit of 1 MiB; the Item target comes only from the URL. This generic form is not exposed to custom View renderers and adds no View mutation protocol. Note text uses a conservative Markdown renderer that treats stored HTML as inert text. Attachments retain a forced-download path. HTML attachments also have an explicit full-page view whose response is forced into an opaque CSP sandbox: scripts and external resources are disabled, inline styles and data images/fonts are allowed, and `nosniff` remains enabled.
 
-The browser routes are unauthenticated at the application layer so deployments can put them behind an identity-aware reverse proxy without exposing the API bearer token to a browser. Deployments **must** bind Stuff to a trusted interface or identity-gate these routes at the proxy. All `/v1` data and mutation routes, including ReaderConfig, remain protected by `STUFF_TOKEN` when configured.
+Browser routes, including the tightly scoped Note form POST, are unauthenticated at the application layer so deployments can put them behind an identity-aware reverse proxy without exposing the API bearer token to a browser. The form rejects cross-site browser submissions and can only create a text Note for the Item named in its route. Deployments **must** bind Stuff to a trusted interface or identity-gate these routes at the proxy; only authenticated readers allowed to append Notes should be admitted. All `/v1` data and mutation routes, including ReaderConfig, remain protected by `STUFF_TOKEN` when configured.
 
 ## Data model
 
