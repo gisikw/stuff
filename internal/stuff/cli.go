@@ -173,7 +173,13 @@ func (c *CLI) note(ctx context.Context, args []string, pretty bool) error {
 			return err
 		}
 		if fs.NArg() < 1 || fs.NArg() > 2 {
-			return usage("stuff note add ITEM [TEXT] [--meta JSON|@FILE] [--attach FILE ...]")
+			return usage("stuff note add ITEM [TEXT|-] [--meta JSON|@FILE] [--attach FILE ...]")
+		}
+		// A bare note command with redirected stdin is almost certainly a
+		// forgotten stdin marker. Keep metadata-only notes available when the
+		// caller explicitly asks for metadata or attachments.
+		if fs.NArg() == 1 && !hasFlag(args[1:], "meta") && len(attaches) == 0 && stdinIsNonTTY(c.In) {
+			return errors.New("note text was omitted while stdin is not a TTY; use `-` to read the note text from stdin")
 		}
 		m, err := readAnyJSONSource(*meta, c.In)
 		if err != nil {
@@ -181,7 +187,18 @@ func (c *CLI) note(ctx context.Context, args []string, pretty bool) error {
 		}
 		body := Document{"item_id": fs.Arg(0), "metadata": m}
 		if fs.NArg() == 2 {
-			body["text"] = fs.Arg(1)
+			text := fs.Arg(1)
+			if text == "-" {
+				b, e := io.ReadAll(c.In)
+				if e != nil {
+					return fmt.Errorf("note text from stdin: %w", e)
+				}
+				if !utf8.Valid(b) {
+					return errors.New("note text from stdin is not valid UTF-8")
+				}
+				text = string(b)
+			}
+			body["text"] = text
 		}
 		if len(attaches) > 0 {
 			xs := make([]any, 0, len(attaches))
@@ -545,6 +562,16 @@ func readJSONSource(src string, in io.Reader) (any, error) {
 	return out, nil
 }
 
+func hasFlag(args []string, name string) bool {
+	prefix := "--" + name
+	for _, arg := range args {
+		if arg == prefix || strings.HasPrefix(arg, prefix+"=") {
+			return true
+		}
+	}
+	return false
+}
+
 // flagsFirst supports the documented style where flags follow positional
 // arguments. Stuff's current flags all take exactly one value.
 func flagsFirst(args []string) []string {
@@ -581,7 +608,11 @@ Usage:
   stuff get ITEM
   stuff update ITEM [--name NAME] [--meta JSON|@FILE] [--view VIEW | --clear-view] [--revision REV] [--validate SCHEMA]
   stuff find [@QUERY | stdin]
-  stuff note add ITEM [TEXT] [--meta JSON|@FILE] [--attach FILE ...]
+  stuff note add ITEM [TEXT|-] [--meta JSON|@FILE] [--attach FILE ...]
+
+  Use TEXT or dash to read Note text from stdin. A bare note add with redirected
+  stdin is rejected; use dash explicitly when text is piped. Metadata-only Notes
+  with redirected stdin require --meta or --attach.
   stuff note get NOTE
   stuff note find [@QUERY | stdin]
   stuff view add NAME @RENDERER [--schema SCHEMA] [--capabilities LIST] [--operations JSON|@FILE]
