@@ -198,7 +198,7 @@ func TestViewCapabilitiesAreExplicitValidatedAndClearable(t *testing.T) {
 	h := NewServer(store, "", nil).Handler()
 	code, created := request(t, h, "POST", "/v1/views", Document{
 		"name": "Projection", "renderer": viewHTML,
-		"capabilities": []any{"find_notes", "find_items", "find_notes"},
+		"capabilities": []any{"find_notes", "update_linked_status", "find_items", "find_notes"},
 	})
 	if code != http.StatusCreated {
 		t.Fatalf("create with capabilities: %d %#v", code, created)
@@ -206,7 +206,7 @@ func TestViewCapabilitiesAreExplicitValidatedAndClearable(t *testing.T) {
 	id := created["id"].(string)
 	code, got := request(t, h, "GET", "/v1/views/"+id, nil)
 	capabilities, _ := got["capabilities"].([]any)
-	if code != http.StatusOK || len(capabilities) != 2 || capabilities[0] != "find_items" || capabilities[1] != "find_notes" {
+	if code != http.StatusOK || len(capabilities) != 3 || capabilities[0] != "find_items" || capabilities[1] != "find_notes" || capabilities[2] != "update_linked_status" {
 		t.Fatalf("capabilities not canonical: %d %#v", code, got)
 	}
 

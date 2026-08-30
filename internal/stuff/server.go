@@ -62,7 +62,7 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && s.serveReadRoute(w, r) {
 		return
 	}
-	if r.Method == http.MethodPost && s.serveReadViewQueryRoute(w, r) {
+	if r.Method == http.MethodPost && (s.serveReadViewQueryRoute(w, r) || s.serveReadViewStatusRoute(w, r)) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -584,15 +584,15 @@ func normalizeViewCapabilities(value any) ([]any, error) {
 	}
 	raw, ok := value.([]any)
 	if !ok {
-		return nil, bad("capabilities", "capabilities must be an array", `["find_items","find_notes"]`)
+		return nil, bad("capabilities", "capabilities must be an array", `["find_items","find_notes","update_linked_status"]`)
 	}
-	allowed := map[string]bool{"find_items": true, "find_notes": true}
+	allowed := map[string]bool{"find_items": true, "find_notes": true, "update_linked_status": true}
 	seen := make(map[string]bool, len(raw))
 	values := make([]string, 0, len(raw))
 	for _, entry := range raw {
 		capability, ok := entry.(string)
 		if !ok || !allowed[capability] {
-			return nil, bad("capabilities", "unknown View capability", "find_items and/or find_notes")
+			return nil, bad("capabilities", "unknown View capability", "find_items, find_notes, and/or update_linked_status")
 		}
 		if !seen[capability] {
 			seen[capability] = true
