@@ -152,7 +152,11 @@ A Note belongs to exactly one Item. Terms such as `decision`, `attempt`, `report
   "revision": "1-…",
   "renderer": "<!doctype html>…",
   "schema": "report-html",
-  "capabilities": ["find_items", "find_notes"]
+  "capabilities": ["find_items", "find_notes"],
+  "operations": {
+    "related": {"request": {"method": "POST", "path": "/v1/items/_find", "body": {"selector": {"metadata.project": "$args.project"}, "limit": 20}}},
+    "updateItem": {"request": {"method": "PATCH", "path": "/v1/items/$args.id", "body": {"metadata": "$args.metadata", "revision": "$args.revision"}}}
+  }
 }
 ```
 
@@ -170,7 +174,7 @@ When `/read/items/ITEM` encounters a `view_id`, the browser surface runs that re
 }
 ```
 
-The snapshot contains the public Item envelope and a bounded set of linked public Note envelopes. Attachment descriptors are included; attachment bodies and credentials are not. `?plain=1` always bypasses the renderer, and stale View references visibly fall back to the generic Item page.
+The snapshot contains the public Item envelope and a bounded set of linked public Note envelopes. Attachment descriptors are included; attachment bodies, View operation templates, and credentials are not. `?plain=1` always bypasses the renderer, and stale View references visibly fall back to the generic Item page.
 
 A renderer may request bounded, read-only Mango projections of public Item or Note envelopes through its parent:
 
@@ -190,9 +194,25 @@ addEventListener("message", (event) => {
 });
 ```
 
-The first-party host accepts messages only from its renderer iframe, permits at most four concurrent requests, limits query JSON to 64 KiB and results to the service maximum of 200 documents, and exposes only Item and Note finds. Query access is denied by default: the View must explicitly carry `find_items` and/or `find_notes` in its top-level `capabilities` field. The host performs the same-origin request; the opaque renderer receives no bearer credential, direct fetch/socket capability, mutation API, attachment body, View source, or ReaderConfig access.
+The first-party host accepts messages only from its renderer iframe, permits at most four concurrent queries, limits query JSON to 64 KiB and results to the service maximum of 200 documents, and exposes only Item and Note finds. Query access is denied by default: the View must explicitly carry `find_items` and/or `find_notes` in its top-level `capabilities` field. The host performs the same-origin request; the opaque renderer receives no bearer credential, direct fetch/socket capability, attachment body, View source, operation templates, or ReaderConfig access.
 
-A View renderer is still active code trusted with its snapshot and any explicitly granted query results. Browser sandboxing contains ambient authority; it is not a substitute for reviewing renderer source before attaching it to sensitive Items. `examples/views/stuff-home.html` is a responsive userland homepage that combines reverse chronology with an explicitly advisory `metadata.status` work lens.
+A View may also store named, trusted request templates. The renderer invokes one existing Stuff API request at a time with `stuff.invoke(name, args)`; the first-party host resolves the originating Item's current View and never accepts a View ID from the iframe. Exact body string nodes such as `"$args.metadata"` become the raw JSON argument value. Path references require a scalar and are URL-path-escaped. Missing arguments reject the Promise, while unused arguments are ignored; body strings are never partially interpolated. Existing API status and JSON are returned unchanged:
+
+```js
+// Read through the View's `related` Mango template.
+const found = await stuff.invoke("related", {project: "garden"});
+
+// Update through `updateItem`; metadata is substituted as an object, not text.
+try {
+  const item = await stuff.invoke("updateItem", {
+    id: "item_…", revision: "3-…", metadata: {state: "done"}
+  });
+} catch (error) {
+  console.error(error.status, error.result); // includes normal API conflicts/errors
+}
+```
+
+Operations are a deliberately small, View-scoped reverse proxy to `/v1/`, not a grant system, runtime, patch language, or multi-step workflow facility. A View renderer is active code trusted with its snapshot, operation surface, and any explicitly granted query results. Review renderer source and operation templates before attaching the View to sensitive Items. `examples/views/stuff-home.html` is a responsive userland homepage that combines reverse chronology with an explicitly advisory `metadata.status` work lens.
 
 ```bash
 view=$(stuff view add "Migration report" @report.html --schema report-html \
@@ -200,6 +220,8 @@ view=$(stuff view add "Migration report" @report.html --schema report-html \
 stuff view get "$view"
 stuff view update "$view" @report-v2.html --name "Migration report v2" --revision 1-…
 stuff view update "$view" @report-v2.html --clear-schema --clear-capabilities
+stuff view update "$view" --operations @operations.json
+stuff view update "$view" --clear-operations
 ```
 
 ### ReaderConfig
@@ -302,9 +324,9 @@ stuff note add ITEM [TEXT] [--meta JSON|@FILE] [--attach FILE ...]
 stuff note get NOTE
 stuff note find [@QUERY | stdin]
 
-stuff view add NAME @RENDERER [--schema SCHEMA] [--capabilities LIST]
+stuff view add NAME @RENDERER [--schema SCHEMA] [--capabilities LIST] [--operations JSON|@FILE]
 stuff view get VIEW
-stuff view update VIEW @RENDERER [--name NAME] [--schema SCHEMA | --clear-schema] [--capabilities LIST | --clear-capabilities] [--revision REV]
+stuff view update VIEW [@RENDERER] [--name NAME] [--schema SCHEMA | --clear-schema] [--capabilities LIST | --clear-capabilities] [--operations JSON|@FILE | --clear-operations] [--revision REV]
 
 stuff config get
 stuff config set-home ITEM [--revision REV]

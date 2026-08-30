@@ -65,6 +65,9 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost && s.serveReadViewQueryRoute(w, r) {
 		return
 	}
+	if r.Method == http.MethodPost && s.serveReadViewOperationRoute(w, r) {
+		return
+	}
 	if id, ok := readItemNoteTarget(r.URL.Path); ok && r.Method == http.MethodPost {
 		s.createReadNote(w, r, id)
 		return
@@ -637,6 +640,7 @@ func (s *Server) createView(w http.ResponseWriter, r *http.Request) error {
 		Renderer     string       `json:"renderer"`
 		Schema       optionalJSON `json:"schema"`
 		Capabilities optionalJSON `json:"capabilities"`
+		Operations   optionalJSON `json:"operations"`
 	}
 	if err := decodeUTF8JSON(r, MaxRendererBytes*6+MaxJSONBytes, &in); err != nil {
 		return err
@@ -678,6 +682,9 @@ func (s *Server) createView(w http.ResponseWriter, r *http.Request) error {
 	if len(capabilities) > 0 {
 		doc["capabilities"] = capabilities
 	}
+	if in.Operations.Present && in.Operations.Value != nil {
+		doc["operations"] = in.Operations.Value
+	}
 	rev, err := s.store.Create(r.Context(), id, doc)
 	if err != nil {
 		return err
@@ -692,6 +699,7 @@ func (s *Server) updateView(w http.ResponseWriter, r *http.Request, id string) e
 		Renderer     *string      `json:"renderer"`
 		Schema       optionalJSON `json:"schema"`
 		Capabilities optionalJSON `json:"capabilities"`
+		Operations   optionalJSON `json:"operations"`
 		Revision     string       `json:"revision"`
 	}
 	if err := decodeUTF8JSON(r, MaxRendererBytes*6+MaxJSONBytes, &in); err != nil {
@@ -704,8 +712,8 @@ func (s *Server) updateView(w http.ResponseWriter, r *http.Request, id string) e
 	if doc["stuff_kind"] != "view" {
 		return &StoreError{Status: 404, Reason: "View not found"}
 	}
-	if in.Name == nil && in.Renderer == nil && !in.Schema.Present && !in.Capabilities.Present {
-		return bad("$", "update changes nothing", "provide name, renderer, schema, and/or capabilities")
+	if in.Name == nil && in.Renderer == nil && !in.Schema.Present && !in.Capabilities.Present && !in.Operations.Present {
+		return bad("$", "update changes nothing", "provide name, renderer, schema, capabilities, and/or operations")
 	}
 	if in.Name != nil {
 		n := strings.TrimSpace(*in.Name)
@@ -747,6 +755,13 @@ func (s *Server) updateView(w http.ResponseWriter, r *http.Request, id string) e
 			delete(doc, "capabilities")
 		} else {
 			doc["capabilities"] = capabilities
+		}
+	}
+	if in.Operations.Present {
+		if in.Operations.Value == nil {
+			delete(doc, "operations")
+		} else {
+			doc["operations"] = in.Operations.Value
 		}
 	}
 	rev, _ := doc["_rev"].(string)
@@ -928,7 +943,7 @@ func (s *Server) describe(w http.ResponseWriter, r *http.Request) error {
 	}
 	out := Document{
 		"items": lenDocs(items), "notes": lenDocs(notes), "sample_limit": MaxPageSize,
-		"envelopes":       Document{"item": []any{"id", "name", "created_at", "updated_at", "revision", "metadata", "view_id"}, "note": []any{"id", "item_id", "created_at", "updated_at", "revision", "text", "metadata", "attachments"}, "view": []any{"id", "name", "created_at", "updated_at", "revision", "renderer", "schema", "capabilities"}},
+		"envelopes":       Document{"item": []any{"id", "name", "created_at", "updated_at", "revision", "metadata", "view_id"}, "note": []any{"id", "item_id", "created_at", "updated_at", "revision", "text", "metadata", "attachments"}, "view": []any{"id", "name", "created_at", "updated_at", "revision", "renderer", "schema", "capabilities", "operations"}},
 		"mango":           Document{"version": "CouchDB 3.x Mango", "operators": []any{"$eq", "$ne", "$gt", "$gte", "$lt", "$lte", "$exists", "$type", "$in", "$nin", "$all", "$size", "$elemMatch", "$allMatch", "$and", "$or", "$not", "$nor", "$beginsWith", "$regex", "$mod", "$keyMapMatch", "$text"}},
 		"limits":          Document{"limit_max": MaxPageSize, "selector_bytes_max": MaxQueryBytes, "metadata_bytes_max": MaxJSONBytes, "attachment_bytes_max": MaxAttachmentBytes, "renderer_bytes_max": MaxRendererBytes, "response_bytes_max": MaxResponseBytes},
 		"observed_fields": fields, "indexes": indexes,

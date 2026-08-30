@@ -234,11 +234,12 @@ func (c *CLI) view(ctx context.Context, args []string, pretty bool) error {
 		fs := newFlags("view add")
 		schema := fs.String("schema", "", "advisory Schema name")
 		capabilities := fs.String("capabilities", "", "comma-separated explicit View capabilities")
+		operations := fs.String("operations", "", "operations JSON or @FILE")
 		if err := fs.Parse(flagsFirst(args[1:])); err != nil {
 			return err
 		}
 		if fs.NArg() != 2 {
-			return usage("stuff view add NAME @RENDERER [--schema SCHEMA] [--capabilities LIST]")
+			return usage("stuff view add NAME @RENDERER [--schema SCHEMA] [--capabilities LIST] [--operations JSON|@FILE]")
 		}
 		renderer, err := readRendererSource(fs.Arg(1), c.In)
 		if err != nil {
@@ -250,6 +251,13 @@ func (c *CLI) view(ctx context.Context, args []string, pretty bool) error {
 		}
 		if values := parseViewCapabilities(*capabilities); len(values) > 0 {
 			body["capabilities"] = values
+		}
+		if *operations != "" {
+			value, err := readJSONSource(*operations, c.In)
+			if err != nil {
+				return fmt.Errorf("operations: %w", err)
+			}
+			body["operations"] = value
 		}
 		return c.create(ctx, "/v1/views", body)
 	case "get":
@@ -264,18 +272,23 @@ func (c *CLI) view(ctx context.Context, args []string, pretty bool) error {
 		clearSchema := fs.Bool("clear-schema", false, "remove the advisory Schema reference")
 		capabilities := fs.String("capabilities", "", "comma-separated explicit View capabilities")
 		clearCapabilities := fs.Bool("clear-capabilities", false, "remove all View capabilities")
+		operations := fs.String("operations", "", "operations JSON or @FILE")
+		clearOperations := fs.Bool("clear-operations", false, "remove all View operations")
 		rev := fs.String("revision", "", "optimistic revision")
 		if err := fs.Parse(flagsFirst(args[1:])); err != nil {
 			return err
 		}
-		if fs.NArg() != 2 || (*schema != "" && *clearSchema) || (*capabilities != "" && *clearCapabilities) {
-			return usage("stuff view update VIEW @RENDERER [--name NAME] [--schema SCHEMA | --clear-schema] [--capabilities LIST | --clear-capabilities] [--revision REV]")
+		if fs.NArg() < 1 || fs.NArg() > 2 || (*schema != "" && *clearSchema) || (*capabilities != "" && *clearCapabilities) || (*operations != "" && *clearOperations) {
+			return usage("stuff view update VIEW [@RENDERER] [--name NAME] [--schema SCHEMA | --clear-schema] [--capabilities LIST | --clear-capabilities] [--operations JSON|@FILE | --clear-operations] [--revision REV]")
 		}
-		renderer, err := readRendererSource(fs.Arg(1), c.In)
-		if err != nil {
-			return fmt.Errorf("renderer: %w", err)
+		body := Document{"revision": *rev}
+		if fs.NArg() == 2 {
+			renderer, err := readRendererSource(fs.Arg(1), c.In)
+			if err != nil {
+				return fmt.Errorf("renderer: %w", err)
+			}
+			body["renderer"] = renderer
 		}
-		body := Document{"renderer": renderer, "revision": *rev}
 		if *name != "" {
 			body["name"] = *name
 		}
@@ -288,6 +301,15 @@ func (c *CLI) view(ctx context.Context, args []string, pretty bool) error {
 			body["capabilities"] = values
 		} else if *clearCapabilities {
 			body["capabilities"] = nil
+		}
+		if *operations != "" {
+			value, err := readJSONSource(*operations, c.In)
+			if err != nil {
+				return fmt.Errorf("operations: %w", err)
+			}
+			body["operations"] = value
+		} else if *clearOperations {
+			body["operations"] = nil
 		}
 		return c.requestJSON(ctx, http.MethodPatch, "/v1/views/"+fs.Arg(0), body, pretty, false)
 	default:
@@ -562,9 +584,9 @@ Usage:
   stuff note add ITEM [TEXT] [--meta JSON|@FILE] [--attach FILE ...]
   stuff note get NOTE
   stuff note find [@QUERY | stdin]
-  stuff view add NAME @RENDERER [--schema SCHEMA] [--capabilities LIST]
+  stuff view add NAME @RENDERER [--schema SCHEMA] [--capabilities LIST] [--operations JSON|@FILE]
   stuff view get VIEW
-  stuff view update VIEW @RENDERER [--name NAME] [--schema SCHEMA | --clear-schema] [--capabilities LIST | --clear-capabilities] [--revision REV]
+  stuff view update VIEW [@RENDERER] [--name NAME] [--schema SCHEMA | --clear-schema] [--capabilities LIST | --clear-capabilities] [--operations JSON|@FILE | --clear-operations] [--revision REV]
   stuff config get
   stuff config set-home ITEM [--revision REV]
   stuff config clear-home [--revision REV]

@@ -120,8 +120,8 @@ func TestReadViewDocumentHasHostileSandbox(t *testing.T) {
 	h := NewServer(store, "secret-token", nil).Handler()
 
 	frame := htmlRequest(h, http.MethodGet, "/read/items/item_custom/view")
-	if frame.Code != http.StatusOK || frame.Body.String() != hostileRenderer {
-		t.Fatalf("renderer was not served verbatim: %d %q", frame.Code, frame.Body.String())
+	if frame.Code != http.StatusOK || !strings.HasPrefix(frame.Body.String(), readViewOperationBootstrap) || !strings.HasSuffix(frame.Body.String(), hostileRenderer) {
+		t.Fatalf("renderer was not served with only the operation bootstrap: %d %q", frame.Code, frame.Body.String())
 	}
 	csp := frame.Header().Get("Content-Security-Policy")
 	for _, want := range []string{
