@@ -198,7 +198,7 @@ func TestViewCapabilitiesAreExplicitValidatedAndClearable(t *testing.T) {
 	h := NewServer(store, "", nil).Handler()
 	code, created := request(t, h, "POST", "/v1/views", Document{
 		"name": "Projection", "renderer": viewHTML,
-		"capabilities": []any{"find_notes", "update_linked_status", "find_items", "find_notes"},
+		"capabilities": []any{"find_notes", "find_items", "find_notes"},
 	})
 	if code != http.StatusCreated {
 		t.Fatalf("create with capabilities: %d %#v", code, created)
@@ -206,13 +206,16 @@ func TestViewCapabilitiesAreExplicitValidatedAndClearable(t *testing.T) {
 	id := created["id"].(string)
 	code, got := request(t, h, "GET", "/v1/views/"+id, nil)
 	capabilities, _ := got["capabilities"].([]any)
-	if code != http.StatusOK || len(capabilities) != 3 || capabilities[0] != "find_items" || capabilities[1] != "find_notes" || capabilities[2] != "update_linked_status" {
+	if code != http.StatusOK || len(capabilities) != 2 || capabilities[0] != "find_items" || capabilities[1] != "find_notes" {
 		t.Fatalf("capabilities not canonical: %d %#v", code, got)
 	}
 
-	code, out := request(t, h, "POST", "/v1/views", Document{"name": "Bad", "renderer": viewHTML, "capabilities": []any{"mutate_items"}})
-	if code != http.StatusBadRequest || !strings.Contains(errReason(out), "unknown View capability") {
-		t.Fatalf("unknown capability accepted: %d %#v", code, out)
+	var out Document
+	for _, unsupported := range []string{"mutate_items", "update_linked_status"} {
+		code, out = request(t, h, "POST", "/v1/views", Document{"name": "Bad", "renderer": viewHTML, "capabilities": []any{unsupported}})
+		if code != http.StatusBadRequest || !strings.Contains(errReason(out), "unknown View capability") {
+			t.Fatalf("unsupported mutation capability %q accepted: %d %#v", unsupported, code, out)
+		}
 	}
 	code, out = request(t, h, "PATCH", "/v1/views/"+id, Document{"capabilities": "find_items"})
 	if code != http.StatusBadRequest || !strings.Contains(errReason(out), "must be an array") {

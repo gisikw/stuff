@@ -1,10 +1,9 @@
 package stuff
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -55,7 +54,7 @@ func TestReadViewHostIsFirstPartyShellNotRendererInterpolation(t *testing.T) {
 	if host.Code != http.StatusOK || !strings.Contains(body, `sandbox="allow-scripts allow-top-navigation-by-user-activation"`) || strings.Contains(body, "allow-same-origin") {
 		t.Fatalf("host iframe sandbox: %d %s", host.Code, body)
 	}
-	for _, want := range []string{"/read/items/item_custom/view", "/read/items/item_custom/snapshot", "/read/items/item_custom/query/", "/read/items/item_custom/status", "/read/items/item_custom?plain=1", "/read/view-host.js"} {
+	for _, want := range []string{"/read/items/item_custom/view", "/read/items/item_custom/snapshot", "/read/items/item_custom/query/", "/read/items/item_custom?plain=1", "/read/view-host.js"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("host missing %q: %s", want, body)
 		}
@@ -71,8 +70,47 @@ func TestReadViewHostIsFirstPartyShellNotRendererInterpolation(t *testing.T) {
 	}
 
 	script := htmlRequest(h, http.MethodGet, "/read/view-host.js")
-	if script.Code != http.StatusOK || !strings.Contains(script.Body.String(), "postMessage") || !strings.Contains(script.Body.String(), "event.source !== frame.contentWindow") || !strings.Contains(script.Body.String(), "active >= 4") || !strings.Contains(script.Body.String(), "credentials: \"same-origin\"") || !strings.Contains(script.Body.String(), "Stuff-View-Bridge") || !strings.Contains(script.Body.String(), "stuff:view-status-result") || strings.Contains(script.Body.String(), "secret-token") {
+	if script.Code != http.StatusOK || !strings.Contains(script.Body.String(), "postMessage") || !strings.Contains(script.Body.String(), "event.source !== frame.contentWindow") || !strings.Contains(script.Body.String(), "active >= 4") || !strings.Contains(script.Body.String(), "credentials: \"same-origin\"") || strings.Contains(script.Body.String(), "secret-token") {
 		t.Fatalf("unsafe or missing host script: %d %s", script.Code, script.Body.String())
+	}
+	for _, forbidden := range []string{"data-status", "stuff:view-status-update", "update_linked_status"} {
+		if strings.Contains(body, forbidden) || strings.Contains(script.Body.String(), forbidden) {
+			t.Fatalf("read-only View host retained status mutation behavior %q", forbidden)
+		}
+	}
+}
+
+func TestReadViewCoreDoesNotAssumeMetadataStatusOrObjectShape(t *testing.T) {
+	store := newMemoryStore()
+	metadata := []any{"arbitrary", map[string]any{"workflow": map[string]any{"phase": "ready"}}, float64(7)}
+	putViewUIFixture(t, store, "item_custom", "view_custom", metadata)
+	h := NewServer(store, "", nil).Handler()
+
+	snapshot := htmlRequest(h, http.MethodGet, "/read/items/item_custom/snapshot")
+	if snapshot.Code != http.StatusOK {
+		t.Fatalf("snapshot for non-object metadata: %d %s", snapshot.Code, snapshot.Body.String())
+	}
+	var message Document
+	if err := json.Unmarshal(snapshot.Body.Bytes(), &message); err != nil {
+		t.Fatal(err)
+	}
+	item, _ := message["item"].(map[string]any)
+	if !reflect.DeepEqual(item["metadata"], metadata) {
+		t.Fatalf("arbitrary metadata was interpreted or changed: got %#v want %#v", item["metadata"], metadata)
+	}
+
+	code, out := request(t, h, http.MethodPost, "/read/items/item_custom/status", Document{
+		"item_id": "item_custom", "status": "done", "revision": "1-test",
+	})
+	if code != http.StatusNotFound {
+		t.Fatalf("status-specific browser mutation route still exists: %d %#v", code, out)
+	}
+	stored, err := store.Get(t.Context(), "item_custom")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(stored["metadata"], metadata) || stored["_rev"] != "1-test" {
+		t.Fatalf("rejected status mutation changed arbitrary metadata: %#v", stored)
 	}
 }
 
@@ -195,135 +233,6 @@ func TestReadViewQueryBridgeIsReadOnlyBoundedAndCredentialless(t *testing.T) {
 	code, missing := request(t, h, http.MethodPost, "/read/items/item_other/query/items", Document{"selector": Document{}})
 	if code != http.StatusNotFound {
 		t.Fatalf("non-View Item gained query bridge: %d %#v", code, missing)
-	}
-}
-
-func bridgeStatusRequest(t *testing.T, h http.Handler, batchID string, body Document) (int, Document) {
-	t.Helper()
-	encoded, err := json.Marshal(body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := httptest.NewRequest(http.MethodPost, "/read/items/"+batchID+"/status", bytes.NewReader(encoded))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Stuff-View-Bridge", "1")
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-	var out Document
-	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
-		t.Fatalf("invalid bridge response (%d): %s", w.Code, w.Body.String())
-	}
-	return w.Code, out
-}
-
-func TestReadViewStatusBridgeIsExplicitlyScopedAndStatusOnly(t *testing.T) {
-	store := newMemoryStore()
-	putViewUIFixture(t, store, "item_batch", "view_board", Document{
-		"stuff_kanban": Document{"cards": []any{"item_card"}, "lanes": []any{"todo", "doing", "done"}},
-	})
-	putReadFixture(t, store, "item_card", "item", "Keep this name", "", "2026-08-27T02:00:00Z", "2026-08-27T02:00:00Z", "")
-	putReadFixture(t, store, "item_outside", "item", "Outside", "", "2026-08-27T02:00:00Z", "2026-08-27T02:00:00Z", "")
-	store.mu.Lock()
-	store.docs["item_card"]["metadata"] = Document{"status": "todo", "owner": "preserved"}
-	store.docs["item_outside"]["metadata"] = Document{"status": "todo"}
-	delete(store.docs["view_board"], "capabilities")
-	store.mu.Unlock()
-	h := NewServer(store, "api-secret-never-needed-by-the-frame", nil).Handler()
-
-	body := Document{"item_id": "item_card", "status": "doing", "revision": "1-test"}
-	code, denied := bridgeStatusRequest(t, h, "item_batch", body)
-	if code != http.StatusForbidden || !strings.Contains(errReason(denied), "not allowed") {
-		t.Fatalf("mutation without capability: %d %#v", code, denied)
-	}
-	store.mu.Lock()
-	store.docs["view_board"]["capabilities"] = []any{"update_linked_status"}
-	store.mu.Unlock()
-
-	code, outside := bridgeStatusRequest(t, h, "item_batch", Document{"item_id": "item_outside", "status": "doing", "revision": "1-test"})
-	if code != http.StatusForbidden || !strings.Contains(errReason(outside), "explicitly linked") {
-		t.Fatalf("unlinked card mutated: %d %#v", code, outside)
-	}
-	code, lane := bridgeStatusRequest(t, h, "item_batch", Document{"item_id": "item_card", "status": "deleted", "revision": "1-test"})
-	if code != http.StatusForbidden || !strings.Contains(errReason(lane), "allowed lane") {
-		t.Fatalf("unlisted lane accepted: %d %#v", code, lane)
-	}
-
-	code, extraFields := bridgeStatusRequest(t, h, "item_batch", Document{"item_id": "item_card", "status": "doing", "revision": "1-test", "name": "attacker rename", "metadata": Document{"owner": "lost"}})
-	if code != http.StatusBadRequest || !strings.Contains(errReason(extraFields), "only") {
-		t.Fatalf("extra mutation fields accepted: %d %#v", code, extraFields)
-	}
-	code, moved := bridgeStatusRequest(t, h, "item_batch", body)
-	item, _ := moved["item"].(map[string]any)
-	meta, _ := item["metadata"].(map[string]any)
-	if code != http.StatusOK || item["name"] != "Keep this name" || item["revision"] != "2-test" || meta["status"] != "doing" || meta["owner"] != "preserved" {
-		t.Fatalf("status-only update did not preserve envelope: %d %#v", code, moved)
-	}
-	outsideDoc, _ := store.Get(t.Context(), "item_outside")
-	outsideMeta, _ := outsideDoc["metadata"].(map[string]any)
-	if outsideMeta["status"] != "todo" {
-		t.Fatalf("outside card changed: %#v", outsideDoc)
-	}
-}
-
-func TestReadViewStatusBridgeRequiresHostHeaderAndCurrentRevision(t *testing.T) {
-	store := newMemoryStore()
-	putViewUIFixture(t, store, "item_batch", "view_board", Document{
-		"stuff_kanban": Document{"cards": []any{"item_card"}, "lanes": []any{"todo", "done"}},
-	})
-	putReadFixture(t, store, "item_card", "item", "Card", "", "2026-08-27T02:00:00Z", "2026-08-27T02:00:00Z", "")
-	store.mu.Lock()
-	store.docs["view_board"]["capabilities"] = []any{"update_linked_status"}
-	store.docs["item_card"]["metadata"] = Document{"status": "todo", "details": "newest"}
-	store.mu.Unlock()
-	h := NewServer(store, "secret", nil).Handler()
-
-	code, noHeader := request(t, h, http.MethodPost, "/read/items/item_batch/status", Document{"item_id": "item_card", "status": "done", "revision": "1-test"})
-	if code != http.StatusForbidden || !strings.Contains(errReason(noHeader), "first-party") {
-		t.Fatalf("form-compatible request reached mutation: %d %#v", code, noHeader)
-	}
-	code, missingRevision := bridgeStatusRequest(t, h, "item_batch", Document{"item_id": "item_card", "status": "done"})
-	if code != http.StatusBadRequest || !strings.Contains(errReason(missingRevision), "revision") {
-		t.Fatalf("revisionless update accepted: %d %#v", code, missingRevision)
-	}
-
-	// Simulate another writer after the renderer's copy was loaded.
-	card, _ := store.Get(t.Context(), "item_card")
-	card["metadata"].(map[string]any)["details"] = "changed elsewhere"
-	if _, err := store.Put(t.Context(), "item_card", "1-test", card); err != nil {
-		t.Fatal(err)
-	}
-	code, conflict := bridgeStatusRequest(t, h, "item_batch", Document{"item_id": "item_card", "status": "done", "revision": "1-test"})
-	current, _ := conflict["current"].(map[string]any)
-	currentMeta, _ := current["metadata"].(map[string]any)
-	if code != http.StatusConflict || current["revision"] != "2-test" || currentMeta["status"] != "todo" || currentMeta["details"] != "changed elsewhere" {
-		t.Fatalf("conflict did not return refresh-safe current card: %d %#v", code, conflict)
-	}
-	stored, _ := store.Get(t.Context(), "item_card")
-	storedMeta, _ := stored["metadata"].(map[string]any)
-	if storedMeta["status"] != "todo" || stored["_rev"] != "2-test" {
-		t.Fatalf("stale move overwrote card: %#v", stored)
-	}
-}
-
-func TestReadViewStatusBridgeFailsClosedOnMalformedManifestAndKinds(t *testing.T) {
-	store := newMemoryStore()
-	putViewUIFixture(t, store, "item_batch", "view_board", Document{"stuff_kanban": Document{"cards": []any{"item_card"}, "lanes": []any{3}}})
-	putReadFixture(t, store, "item_card", "item", "Card", "", "2026-08-27T02:00:00Z", "2026-08-27T02:00:00Z", "")
-	store.mu.Lock()
-	store.docs["view_board"]["capabilities"] = []any{"update_linked_status"}
-	store.mu.Unlock()
-	h := NewServer(store, "", nil).Handler()
-	code, malformed := bridgeStatusRequest(t, h, "item_batch", Document{"item_id": "item_card", "status": "done", "revision": "1-test"})
-	if code != http.StatusForbidden || !strings.Contains(errReason(malformed), "manifest") {
-		t.Fatalf("malformed authority manifest accepted: %d %#v", code, malformed)
-	}
-
-	store.mu.Lock()
-	store.docs["item_batch"]["metadata"] = Document{"stuff_kanban": Document{"cards": []any{"view_board"}, "lanes": []any{"done"}}}
-	store.mu.Unlock()
-	code, wrongKind := bridgeStatusRequest(t, h, "item_batch", Document{"item_id": "view_board", "status": "done", "revision": "1-test"})
-	if code != http.StatusForbidden || !strings.Contains(errReason(wrongKind), "not an Item") {
-		t.Fatalf("linked non-Item mutated: %d %#v", code, wrongKind)
 	}
 }
 

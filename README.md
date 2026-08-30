@@ -89,7 +89,7 @@ Create commands print only the new ID, making shell composition reliable.
 
 ## Browser reading surface
 
-`stuff serve` includes a browser reading surface. It is read-only except for the narrowly scoped, opt-in View status bridge described below:
+`stuff serve` includes a read-only browser surface:
 
 - `/read` permanently lists Items by effective activity, including activity from linked Notes.
 - `/read/items/<item-id>` shows the generic Item detail or its explicitly referenced View.
@@ -97,7 +97,7 @@ Create commands print only the new ID, making shell composition reliable.
 
 The activity view deliberately reads a bounded sample of at most 200 Items and 200 Notes, then paginates that sample locally. It displays a warning when either bound is reached. Cards show generic Note counts, humanized timestamps, and shortened IDs without interpreting metadata; full IDs remain available through links or copy controls. Generic Item pages let readers toggle Note chronology. Note text uses a conservative Markdown renderer that treats stored HTML as inert text. Attachments retain a forced-download path. HTML attachments also have an explicit full-page view whose response is forced into an opaque CSP sandbox: scripts and external resources are disabled, inline styles and data images/fonts are allowed, and `nosniff` remains enabled.
 
-The browser routes are unauthenticated at the application layer so deployments can put them behind an identity-aware reverse proxy without exposing the API bearer token to a browser. Deployments **must** bind Stuff to a trusted interface or identity-gate these routes at the proxy. This is especially important when enabling the View status bridge: the bridge deliberately uses the reader's identity perimeter, not `STUFF_TOKEN`. All `/v1` data and mutation routes, including ReaderConfig, remain protected by `STUFF_TOKEN` when configured.
+The browser routes are unauthenticated at the application layer so deployments can put them behind an identity-aware reverse proxy without exposing the API bearer token to a browser. Deployments **must** bind Stuff to a trusted interface or identity-gate these routes at the proxy. All `/v1` data and mutation routes, including ReaderConfig, remain protected by `STUFF_TOKEN` when configured.
 
 ## Data model
 
@@ -152,7 +152,7 @@ A Note belongs to exactly one Item. Terms such as `decision`, `attempt`, `report
   "revision": "1-…",
   "renderer": "<!doctype html>…",
   "schema": "report-html",
-  "capabilities": ["find_items", "find_notes", "update_linked_status"]
+  "capabilities": ["find_items", "find_notes"]
 }
 ```
 
@@ -190,39 +190,9 @@ addEventListener("message", (event) => {
 });
 ```
 
-The first-party host accepts messages only from its renderer iframe, permits at most four concurrent queries and four concurrent status updates, limits query JSON to 64 KiB and results to the service maximum of 200 documents, and exposes only Item and Note finds. Query access is denied by default: the View must explicitly carry `find_items` and/or `find_notes` in its top-level `capabilities` field. The host performs the same-origin request; the opaque renderer receives no bearer credential, direct fetch/socket capability, attachment body, View source, or ReaderConfig access.
+The first-party host accepts messages only from its renderer iframe, permits at most four concurrent requests, limits query JSON to 64 KiB and results to the service maximum of 200 documents, and exposes only Item and Note finds. Query access is denied by default: the View must explicitly carry `find_items` and/or `find_notes` in its top-level `capabilities` field. The host performs the same-origin request; the opaque renderer receives no bearer credential, direct fetch/socket capability, mutation API, attachment body, View source, or ReaderConfig access.
 
-### Revision-safe Kanban status bridge
-
-A View may opt into one narrowly defined mutation with the `update_linked_status` capability. Capability alone grants nothing. The Item hosting the View must also contain an explicit, bounded batch manifest:
-
-```json
-{
-  "stuff_kanban": {
-    "title": "Release batch",
-    "cards": ["item_card_1", "item_card_2"],
-    "lanes": ["backlog", "doing", "review", "done"]
-  }
-}
-```
-
-`cards` may contain at most 200 Item IDs and `lanes` at most 32 non-empty strings. On every update, the first-party server reloads both the host Item and its View and intersects these authorities. It rejects a missing capability, malformed manifest, unlinked card, non-Item target, or status outside the listed lanes. The bridge can change only the caller-owned field `metadata.status`; it preserves the card's name, View link, and all other metadata while Stuff advances the normal `updated_at` and `revision` fields. Card metadata must therefore be an object.
-
-The renderer sends the revision it actually rendered:
-
-```js
-parent.postMessage({
-  type: "stuff:view-status-update",
-  request_id: "move-17",
-  item_id: "item_card_1",
-  status: "review",
-  revision: "3-…"
-}, "*");
-```
-
-The host answers with `stuff:view-status-result`. The server rejects missing, non-string, or additional request fields. A success includes `result.item` with its new revision. HTTP status `409` includes `result.current`, the current authorized public card, so the renderer can refresh visibly rather than overwrite another writer. Missing revisions are rejected. The endpoint requires a JSON request carrying a first-party bridge header, preventing cross-origin HTML forms from invoking it; no CORS policy permits another origin to send that header. This browser defense complements, but does not replace, identity-gating `/read`.
-
-A View renderer is still active code trusted with its snapshot, explicitly granted query results, and any explicitly granted linked-card moves. Browser sandboxing contains ambient authority; it is not a substitute for reviewing renderer source before attaching it to sensitive Items. `examples/views/stuff-home.html` is a responsive read-only userland homepage. `examples/views/stuff-kanban.html` is a lightweight drag/drop board with optimistic moves, revision propagation, and visible conflict refresh.
+A View renderer is still active code trusted with its snapshot and any explicitly granted query results. Browser sandboxing contains ambient authority; it is not a substitute for reviewing renderer source before attaching it to sensitive Items. `examples/views/stuff-home.html` is a responsive userland homepage that combines reverse chronology with an explicitly advisory `metadata.status` work lens.
 
 ```bash
 view=$(stuff view add "Migration report" @report.html --schema report-html \
@@ -230,15 +200,6 @@ view=$(stuff view add "Migration report" @report.html --schema report-html \
 stuff view get "$view"
 stuff view update "$view" @report-v2.html --name "Migration report v2" --revision 1-…
 stuff view update "$view" @report-v2.html --clear-schema --clear-capabilities
-```
-
-To install the checked-in board, create the card Items first, put their IDs and allowed lane values in the host Item's `metadata.stuff_kanban` manifest, and attach a View created with both read and mutation capabilities:
-
-```bash
-board_view=$(stuff view add "Kanban" @examples/views/stuff-kanban.html \
-  --capabilities find_items,update_linked_status)
-stuff add "Release batch" --view "$board_view" --meta \
-  '{"stuff_kanban":{"cards":["item_…","item_…"],"lanes":["backlog","doing","done"]}}'
 ```
 
 ### ReaderConfig
@@ -420,4 +381,4 @@ nix build
 nix flake check
 ```
 
-The test suite covers HTTP and CLI contracts, optimistic revision conflicts, point-in-time validation and drift, arbitrary JSON metadata, View rendering documents (bounded UTF-8, revision conflicts, advisory schema references), Item-to-View references, sandbox/query boundaries, linked-card and lane authorization, status-only preservation, host-header enforcement, conflict refresh envelopes, malformed capability manifests, Mango passthrough, authentication, and query correction. Live integration is tested against CouchDB 3.x.
+The test suite covers HTTP and CLI contracts, optimistic revision conflicts, point-in-time validation and drift, arbitrary JSON metadata, View rendering documents (bounded UTF-8, revision conflicts, advisory schema references), Item-to-View references (round-trip, unknown and wrong-kind rejection, revision conflicts, inert metadata keys), Mango passthrough, authentication, and query correction. Live integration is tested against CouchDB 3.x.
