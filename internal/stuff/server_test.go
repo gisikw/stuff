@@ -3,6 +3,7 @@ package stuff
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -65,6 +66,17 @@ func (m *memoryStore) Put(_ context.Context, id, rev string, d Document) (string
 	x["_id"] = id
 	x["_rev"] = revision
 	m.docs[id] = x
+	if raw, ok := x["_attachments"].(map[string]any); ok {
+		for name, value := range raw {
+			if attachment, ok := value.(map[string]any); ok {
+				if encoded, ok := attachment["data"].(string); ok {
+					if data, err := base64.StdEncoding.DecodeString(encoded); err == nil {
+						m.attachments[id+"/"+name] = data
+					}
+				}
+			}
+		}
+	}
 	return revision, nil
 }
 func (m *memoryStore) Find(_ context.Context, kind string, q Document) (Document, error) {
@@ -125,6 +137,56 @@ func errReason(d Document) string {
 	e, _ := d["error"].(map[string]any)
 	s, _ := e["reason"].(string)
 	return s
+}
+
+func TestImageUploadIsBoundedAndServed(t *testing.T) {
+	store := newMemoryStore()
+	srv := NewServer(store, "", nil)
+	h := srv.Handler()
+	_, item := request(t, h, http.MethodPost, "/v1/items", Document{"name": "item", "metadata": Document{}})
+	_, note := request(t, h, http.MethodPost, "/v1/notes", Document{"item_id": item["id"], "text": "with image"})
+	noteID := note["id"].(string)
+	body := bytes.NewReader([]byte("not really decoded, but an image/png upload"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/notes/"+noteID+"/attachments/photo.png", body)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "image/png")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("upload status %d: %s", w.Code, w.Body.String())
+	}
+	get := httptest.NewRequest(http.MethodGet, "/v1/notes/"+noteID+"/attachments/photo.png", nil)
+	get.Header.Set("Authorization", "Bearer secret")
+	out := httptest.NewRecorder()
+	h.ServeHTTP(out, get)
+	if out.Code != http.StatusOK || out.Body.String() != "not really decoded, but an image/png upload" || out.Header().Get("Content-Type") != "image/png" {
+		t.Fatalf("download: %d %q %#v", out.Code, out.Body.String(), out.Header())
+	}
+}
+
+func TestImageUploadRejectsNonImageAndOversize(t *testing.T) {
+	store := newMemoryStore()
+	h := NewServer(store, "", nil).Handler()
+	_, item := request(t, h, http.MethodPost, "/v1/items", Document{"name": "item", "metadata": Document{}})
+	_, note := request(t, h, http.MethodPost, "/v1/notes", Document{"item_id": item["id"]})
+	path := "/v1/notes/" + note["id"].(string) + "/attachments/photo.png"
+	for _, tc := range []struct {
+		contentType string
+		body        io.Reader
+		want        int
+	}{
+		{"text/plain", strings.NewReader("no"), http.StatusBadRequest},
+		{"image/png", bytes.NewReader(make([]byte, MaxImageUploadBytes+1)), http.StatusBadRequest},
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, tc.body)
+		req.Header.Set("Authorization", "Bearer secret")
+		req.Header.Set("Content-Type", tc.contentType)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != tc.want {
+			t.Fatalf("%s upload status %d, want %d: %s", tc.contentType, w.Code, tc.want, w.Body.String())
+		}
+	}
 }
 
 func TestHealthIsPublicButDataRequiresToken(t *testing.T) {

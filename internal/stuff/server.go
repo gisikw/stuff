@@ -28,8 +28,11 @@ const (
 	MaxJSONBytes       = 1 << 20
 	MaxQueryBytes      = 64 << 10
 	MaxAttachmentBytes = 16 << 20
-	MaxResponseBytes   = 16 << 20
-	MaxPageSize        = 200
+	// MaxImageUploadBytes is deliberately smaller than the JSON attachment
+	// budget: browser uploads are streamed directly from the request body.
+	MaxImageUploadBytes = 8 << 20
+	MaxResponseBytes    = 16 << 20
+	MaxPageSize         = 200
 	// MaxRendererBytes bounds a View's HTML renderer document. JSON string
 	// escaping can inflate UTF-8 up to 6x, so view requests decode with that
 	// headroom before the renderer itself is measured.
@@ -106,7 +109,19 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	case len(parts) == 2 && parts[0] == "notes" && r.Method == http.MethodGet:
 		err = s.get(w, r, parts[1], "note")
 	case len(parts) == 4 && parts[0] == "notes" && parts[2] == "attachments" && r.Method == http.MethodGet:
-		err = s.attachment(w, r, parts[1], parts[3])
+		id, name, ok := apiAttachmentParts(parts)
+		if !ok {
+			writeError(w, http.StatusNotFound, "path", "invalid attachment path", "encoded Note ID and filename")
+		} else {
+			err = s.attachment(w, r, id, name)
+		}
+	case len(parts) == 4 && parts[0] == "notes" && parts[2] == "attachments" && r.Method == http.MethodPost:
+		id, name, ok := apiAttachmentParts(parts)
+		if !ok {
+			writeError(w, http.StatusNotFound, "path", "invalid attachment path", "encoded Note ID and filename")
+		} else {
+			err = s.uploadImage(w, r, id, name)
+		}
 	case p == "views" && r.Method == http.MethodPost:
 		err = s.createView(w, r)
 	case len(parts) == 2 && parts[0] == "views" && r.Method == http.MethodGet:
@@ -493,6 +508,65 @@ func (s *Server) createNote(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	writeJSON(w, http.StatusCreated, Document{"id": id, "revision": rev})
+	return nil
+}
+
+func apiAttachmentParts(parts []string) (string, string, bool) {
+	id, idOK := onePathPart(parts[1])
+	name, nameOK := onePathPart(parts[3])
+	return id, name, idOK && nameOK
+}
+
+func (s *Server) uploadImage(w http.ResponseWriter, r *http.Request, id, name string) error {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\\") {
+		return bad("name", "attachment name is invalid", "a base filename without path separators")
+	}
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || !strings.HasPrefix(strings.ToLower(mediaType), "image/") {
+		return bad("Content-Type", "image uploads require an image content type", "an image/* Content-Type")
+	}
+	if r.ContentLength > MaxImageUploadBytes {
+		return bad("upload", "image exceeds the upload size limit", fmt.Sprintf("at most %d bytes", MaxImageUploadBytes))
+	}
+	data, err := io.ReadAll(io.LimitReader(r.Body, MaxImageUploadBytes+1))
+	if err != nil {
+		return bad("upload", "cannot read image upload: "+err.Error(), fmt.Sprintf("at most %d bytes", MaxImageUploadBytes))
+	}
+	if len(data) > MaxImageUploadBytes {
+		return bad("upload", "image exceeds the upload size limit", fmt.Sprintf("at most %d bytes", MaxImageUploadBytes))
+	}
+	doc, err := s.store.Get(r.Context(), id)
+	if err != nil {
+		return err
+	}
+	if doc["stuff_kind"] != "note" {
+		return &StoreError{Status: http.StatusNotFound, Reason: "Note not found"}
+	}
+	attachments, _ := doc["_attachments"].(map[string]any)
+	if attachments == nil {
+		attachments = map[string]any{}
+	}
+	metas, _ := doc["stuff_attachment_meta"].(map[string]any)
+	if metas == nil {
+		metas = map[string]any{}
+	}
+	encoded := base64.StdEncoding.EncodeToString(data)
+	attachments[name] = map[string]any{"content_type": mediaType, "data": encoded}
+	sum := sha256.Sum256(data)
+	metas[name] = map[string]any{"sha256": hex.EncodeToString(sum[:]), "bytes": len(data), "media_type": mediaType, "url": "/v1/notes/" + url.PathEscape(id) + "/attachments/" + url.PathEscape(name)}
+	doc["_attachments"] = attachments
+	doc["stuff_attachment_meta"] = metas
+	doc["updated_at"] = s.now().UTC().Format(time.RFC3339Nano)
+	rev, _ := doc["_rev"].(string)
+	if requested := r.URL.Query().Get("revision"); requested != "" {
+		rev = requested
+	}
+	newRev, err := s.store.Put(r.Context(), id, rev, doc)
+	if err != nil {
+		return err
+	}
+	doc["_rev"] = newRev
+	writeJSON(w, http.StatusOK, publicDocument(doc))
 	return nil
 }
 
@@ -945,7 +1019,7 @@ func (s *Server) describe(w http.ResponseWriter, r *http.Request) error {
 		"items": lenDocs(items), "notes": lenDocs(notes), "sample_limit": MaxPageSize,
 		"envelopes":       Document{"item": []any{"id", "name", "created_at", "updated_at", "revision", "metadata", "view_id"}, "note": []any{"id", "item_id", "created_at", "updated_at", "revision", "text", "metadata", "attachments"}, "view": []any{"id", "name", "created_at", "updated_at", "revision", "renderer", "schema", "capabilities", "operations"}},
 		"mango":           Document{"version": "CouchDB 3.x Mango", "operators": []any{"$eq", "$ne", "$gt", "$gte", "$lt", "$lte", "$exists", "$type", "$in", "$nin", "$all", "$size", "$elemMatch", "$allMatch", "$and", "$or", "$not", "$nor", "$beginsWith", "$regex", "$mod", "$keyMapMatch", "$text"}},
-		"limits":          Document{"limit_max": MaxPageSize, "selector_bytes_max": MaxQueryBytes, "metadata_bytes_max": MaxJSONBytes, "attachment_bytes_max": MaxAttachmentBytes, "renderer_bytes_max": MaxRendererBytes, "response_bytes_max": MaxResponseBytes},
+		"limits":          Document{"limit_max": MaxPageSize, "selector_bytes_max": MaxQueryBytes, "metadata_bytes_max": MaxJSONBytes, "attachment_bytes_max": MaxAttachmentBytes, "image_upload_bytes_max": MaxImageUploadBytes, "renderer_bytes_max": MaxRendererBytes, "response_bytes_max": MaxResponseBytes},
 		"observed_fields": fields, "indexes": indexes,
 		"text_search": hasIndexType(indexes, "text"),
 		"examples":    Document{"find_items": `stuff find <<'JSON'\n{"selector":{"metadata.area":"familiar"},"limit":20}\nJSON`, "find_notes": `stuff note find <<'JSON'\n{"selector":{"metadata.kind":"decision"},"limit":20}\nJSON`},

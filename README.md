@@ -249,6 +249,22 @@ stuff note add "$item" "Migration report" \
 
 Ordinary Note retrieval and queries return attachment descriptors, never inline bodies. Attachment downloads use a restrictive content security policy, `nosniff`, and attachment disposition. The browser read surface may display HTML attachments only through its CSP-sandboxed, scriptless full-page view. Deployments that need active HTML should still use a separate document origin.
 
+### Browser image upload contract
+
+The View can attach an image to an existing Note with an authenticated, same-origin request:
+
+```http
+POST /v1/notes/{note_id}/attachments/{filename}[?revision={revision}]
+Authorization: Bearer $STUFF_TOKEN
+Content-Type: image/png
+
+<raw image bytes>
+```
+
+`note_id` and `filename` are URL path segments; `filename` must be a base filename with no `/` or `\\` (URL-encode spaces and other special characters). The request body is limited to **8 MiB** (`MaxImageUploadBytes`) and its media type must be `image/*` (parameters such as `image/jpeg; charset=binary` are accepted). A supplied `revision` is checked using the same optimistic-concurrency rules as other mutations; if omitted, the current Note revision is used. Existing files with the same name are replaced. On success the endpoint returns `200` and the public Note envelope, including its refreshed `revision` and attachment descriptor. It returns `400` for a non-image or oversized upload, `401` for a missing/invalid bearer token, `404` for an unknown Note, and `409` for a revision conflict.
+
+Fetch an uploaded image with `GET /v1/notes/{note_id}/attachments/{filename}` and the same bearer token; the response preserves the stored image content type. This API is intended for the follow-up View dropzone/file-picker integration only—**paste handling is intentionally not part of the contract**. The endpoint is same-origin and does not add CORS headers; a deployment exposing it cross-origin must provide its own narrowly scoped CORS policy at a trusted proxy (while still requiring the bearer token).
+
 ## Advisory Schemas
 
 Schemas use standard JSON Schema. They document a convention and validate metadata only when explicitly requested.
