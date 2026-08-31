@@ -1,6 +1,7 @@
 package stuff
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -225,6 +226,53 @@ func TestReadPaginationAndDetailMarkdownSafety(t *testing.T) {
 	}
 	if strings.Contains(body, "<script>") || !strings.Contains(body, "&lt;script&gt;alert(1)&lt;/script&gt;") {
 		t.Fatalf("raw HTML was not rendered as inert text: %s", body)
+	}
+}
+
+func TestReadImageAttachmentUploadUsesBrowserAuthAndLimits(t *testing.T) {
+	store := newMemoryStore()
+	itemID := "item_upload"
+	putReadFixture(t, store, itemID, "item", "Uploads", "", "2026-08-27T01:00:00Z", "2026-08-27T01:00:00Z", "")
+	putReadFixture(t, store, "note_upload", "note", "", itemID, "2026-08-27T02:00:00Z", "2026-08-27T02:00:00Z", "image")
+	h := NewServer(store, "secret", nil).Handler()
+	path := "/read/notes/note_upload/attachments/photo.png"
+
+	upload := httptest.NewRequest(http.MethodPost, path, bytes.NewReader([]byte("browser image")))
+	upload.Header.Set("Content-Type", "image/png")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, upload)
+	if w.Code != http.StatusOK {
+		t.Fatalf("browser upload required bearer credentials: %d %s", w.Code, w.Body.String())
+	}
+	get := htmlRequest(h, http.MethodGet, path)
+	if get.Code != http.StatusOK || get.Body.String() != "browser image" || get.Header().Get("Content-Type") != "image/png" || !strings.Contains(get.Header().Get("Content-Disposition"), "inline") || get.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("image response: %d %q %#v", get.Code, get.Body.String(), get.Header())
+	}
+
+	for _, tc := range []struct {
+		name, contentType string
+		body              io.Reader
+	}{
+		{"non-image", "text/plain", strings.NewReader("no")},
+		{"oversize", "image/png", bytes.NewReader(make([]byte, MaxImageUploadBytes+1))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, path, tc.body)
+			req.Header.Set("Content-Type", tc.contentType)
+			out := httptest.NewRecorder()
+			h.ServeHTTP(out, req)
+			if out.Code != http.StatusBadRequest {
+				t.Fatalf("status %d, want 400: %s", out.Code, out.Body.String())
+			}
+		})
+	}
+	crossSite := httptest.NewRequest(http.MethodPost, path, strings.NewReader("cross-site"))
+	crossSite.Header.Set("Content-Type", "image/png")
+	crossSite.Header.Set("Sec-Fetch-Site", "cross-site")
+	out := httptest.NewRecorder()
+	h.ServeHTTP(out, crossSite)
+	if out.Code != http.StatusForbidden {
+		t.Fatalf("cross-site upload accepted: %d %s", out.Code, out.Body.String())
 	}
 }
 

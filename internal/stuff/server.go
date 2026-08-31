@@ -71,6 +71,9 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost && s.serveReadViewOperationRoute(w, r) {
 		return
 	}
+	if r.Method == http.MethodPost && s.serveReadAttachmentUploadRoute(w, r) {
+		return
+	}
 	if id, ok := readItemNoteTarget(r.URL.Path); ok && r.Method == http.MethodPost {
 		s.createReadNote(w, r, id)
 		return
@@ -113,14 +116,14 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			writeError(w, http.StatusNotFound, "path", "invalid attachment path", "encoded Note ID and filename")
 		} else {
-			err = s.attachment(w, r, id, name)
+			err = s.attachment(w, r, id, name, false)
 		}
 	case len(parts) == 4 && parts[0] == "notes" && parts[2] == "attachments" && r.Method == http.MethodPost:
 		id, name, ok := apiAttachmentParts(parts)
 		if !ok {
 			writeError(w, http.StatusNotFound, "path", "invalid attachment path", "encoded Note ID and filename")
 		} else {
-			err = s.uploadImage(w, r, id, name)
+			err = s.uploadImage(w, r, id, name, "/v1")
 		}
 	case p == "views" && r.Method == http.MethodPost:
 		err = s.createView(w, r)
@@ -517,7 +520,7 @@ func apiAttachmentParts(parts []string) (string, string, bool) {
 	return id, name, idOK && nameOK
 }
 
-func (s *Server) uploadImage(w http.ResponseWriter, r *http.Request, id, name string) error {
+func (s *Server) uploadImage(w http.ResponseWriter, r *http.Request, id, name, routePrefix string) error {
 	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\\") {
 		return bad("name", "attachment name is invalid", "a base filename without path separators")
 	}
@@ -553,7 +556,7 @@ func (s *Server) uploadImage(w http.ResponseWriter, r *http.Request, id, name st
 	encoded := base64.StdEncoding.EncodeToString(data)
 	attachments[name] = map[string]any{"content_type": mediaType, "data": encoded}
 	sum := sha256.Sum256(data)
-	metas[name] = map[string]any{"sha256": hex.EncodeToString(sum[:]), "bytes": len(data), "media_type": mediaType, "url": "/v1/notes/" + url.PathEscape(id) + "/attachments/" + url.PathEscape(name)}
+	metas[name] = map[string]any{"sha256": hex.EncodeToString(sum[:]), "bytes": len(data), "media_type": mediaType, "url": routePrefix + "/notes/" + url.PathEscape(id) + "/attachments/" + url.PathEscape(name)}
 	doc["_attachments"] = attachments
 	doc["stuff_attachment_meta"] = metas
 	doc["updated_at"] = s.now().UTC().Format(time.RFC3339Nano)
@@ -570,7 +573,7 @@ func (s *Server) uploadImage(w http.ResponseWriter, r *http.Request, id, name st
 	return nil
 }
 
-func (s *Server) attachment(w http.ResponseWriter, r *http.Request, id, name string) error {
+func (s *Server) attachment(w http.ResponseWriter, r *http.Request, id, name string, inline bool) error {
 	doc, err := s.store.Get(r.Context(), id)
 	if err != nil {
 		return err
@@ -587,7 +590,11 @@ func (s *Server) attachment(w http.ResponseWriter, r *http.Request, id, name str
 	w.Header().Set("Content-Length", headers.Get("Content-Length"))
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
+	disposition := "attachment"
+	if inline && strings.HasPrefix(strings.ToLower(headers.Get("Content-Type")), "image/") {
+		disposition = "inline"
+	}
+	w.Header().Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": name}))
 	w.WriteHeader(200)
 	_, err = io.Copy(w, body)
 	return err

@@ -105,7 +105,7 @@ func (s *Server) serveReadRoute(w http.ResponseWriter, r *http.Request) bool {
 		}
 		id, errID := url.PathUnescape(parts[0])
 		name, errName := url.PathUnescape(parts[2])
-		if errID != nil || errName != nil || id == "" || name == "" {
+		if errID != nil || errName != nil || id == "" || name == "" || strings.Contains(id, "/") || strings.Contains(name, "/") {
 			readHTTPError(w, http.StatusNotFound, "Attachment not found")
 			return true
 		}
@@ -113,7 +113,7 @@ func (s *Server) serveReadRoute(w http.ResponseWriter, r *http.Request) bool {
 		if len(parts) == 4 {
 			err = s.viewHTMLAttachment(w, r, id, name)
 		} else {
-			err = s.attachment(w, r, id, name)
+			err = s.attachment(w, r, id, name, true)
 		}
 		if err != nil {
 			s.readError(w, err)
@@ -122,6 +122,40 @@ func (s *Server) serveReadRoute(w http.ResponseWriter, r *http.Request) bool {
 	default:
 		return false
 	}
+}
+
+// serveReadAttachmentUploadRoute is dispatched before the API bearer-token
+// check, like the browser Note form. The deployment's browser identity/session
+// gate (if present) protects the /read surface; this endpoint also rejects
+// cross-site form submissions as its CSRF boundary.
+func (s *Server) serveReadAttachmentUploadRoute(w http.ResponseWriter, r *http.Request) bool {
+	const prefix = "/read/notes/"
+	if !strings.HasPrefix(r.URL.Path, prefix) {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, prefix), "/")
+	if len(parts) != 3 || parts[1] != "attachments" {
+		return false
+	}
+	id, idOK := onePathPart(parts[0])
+	name, nameOK := onePathPart(parts[2])
+	if !idOK || !nameOK || strings.Contains(id, "/") || strings.Contains(name, "/") {
+		readHTTPError(w, http.StatusNotFound, "Attachment not found")
+		return true
+	}
+	if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+		readHTTPError(w, http.StatusForbidden, "Cross-site attachment upload is not allowed")
+		return true
+	}
+	if err := s.uploadImage(w, r, id, name, "/read"); err != nil {
+		var apiErr *apiError
+		if errors.As(err, &apiErr) {
+			readHTTPError(w, apiErr.status, apiErr.reason)
+		} else {
+			s.readError(w, err)
+		}
+	}
+	return true
 }
 
 func readItemNoteTarget(path string) (string, bool) {
